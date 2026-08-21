@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Licensing Platform -- Private Admin Tool</title>
+<meta name="robots" content="noindex, nofollow">
+<style>
+  body{font-family:system-ui,sans-serif;max-width:720px;margin:40px auto;padding:0 16px;color:#1c2230;}
+  h1{font-size:18px;} h2{font-size:15px;margin-top:0;}
+  label{display:block;margin-top:14px;font-weight:600;font-size:13px;}
+  input,select{width:100%;padding:9px 10px;border:1px solid #ccc;border-radius:6px;font-size:14px;box-sizing:border-box;margin-top:4px;}
+  button{margin-top:18px;padding:10px 18px;background:#1c2c52;color:#fff;border:none;border-radius:6px;font-size:14px;cursor:pointer;}
+  .result{margin-top:16px;padding:12px;border-radius:6px;font-size:13px;white-space:pre-wrap;display:none;}
+  .ok{background:#e8f5e9;color:#1b5e20;display:block;}
+  .err{background:#fdecea;color:#b3261e;display:block;}
+  .muted{color:#666;font-size:12px;margin-top:4px;}
+  .card{border:1px solid #e5e1d5;border-radius:10px;padding:18px;margin-top:24px;}
+  table{width:100%;border-collapse:collapse;margin-top:12px;font-size:12px;}
+  th,td{text-align:left;padding:6px 8px;border-bottom:1px solid #eee;}
+  .badge{padding:2px 8px;border-radius:10px;font-size:11px;}
+  .badge-active{background:#e8f5e9;color:#1b5e20;} .badge-revoked{background:#fdecea;color:#b3261e;}
+  .row{display:flex;gap:10px;flex-wrap:wrap;}
+</style>
+</head>
+<body>
+  <h1>Licensing Platform -- Private Admin Tool</h1>
+  <p class="muted">Not linked from anywhere -- keep this URL private. Talks to your own /api/admin/* endpoints, protected by the admin password below (your ADMIN_SECRET environment variable).</p>
+
+  <label>Admin password
+    <input type="password" id="adminSecret" autocomplete="off">
+  </label>
+
+  <div class="card">
+    <h2>Register a product (one-time, per product)</h2>
+    <p class="muted">Do this once per product before issuing any licenses for it -- e.g. once for "Restaurant POS", again later when you launch "Inventory".</p>
+    <div class="row">
+      <div style="flex:1;"><label>Product ID<input type="text" id="prodId" placeholder="e.g. restaurant-pos"></label></div>
+      <div style="flex:1;"><label>Product name<input type="text" id="prodName" placeholder="e.g. Restaurant POS"></label></div>
+    </div>
+    <label>Current version (optional)<input type="text" id="prodVersion" placeholder="0.1.0"></label>
+    <button id="btnCreateProduct">Register Product</button>
+    <div class="result" id="productResult"></div>
+  </div>
+
+  <div class="card">
+    <h2>Issue a new license</h2>
+    <div class="row">
+      <div style="flex:1;"><label>Product<select id="issueProduct"></select></label></div>
+      <div style="flex:1;"><label>Tier (optional)<input type="text" id="issueTier" placeholder="Standard / Pro"></label></div>
+    </div>
+    <label>Existing customer ID (leave blank for a new customer)<input type="text" id="issueCustomerId" placeholder="only if this customer already has another license"></label>
+    <label>Customer / restaurant name (required if no customer ID above)<input type="text" id="issueCustomerName" placeholder="e.g. Spice Route Kitchen"></label>
+    <div class="row">
+      <div style="flex:1;"><label>Email (optional)<input type="text" id="issueEmail"></label></div>
+      <div style="flex:1;"><label>Phone (optional)<input type="text" id="issuePhone"></label></div>
+    </div>
+    <button id="btnIssue">Generate &amp; Save License</button>
+    <div class="result" id="issueResult"></div>
+  </div>
+
+  <div class="card">
+    <h2>Revoke / reactivate / unbind</h2>
+    <label>License key<input type="text" id="revokeKey" placeholder="e.g. REST-4F2A-9K3P-7Q1Z"></label>
+    <div class="row">
+      <button id="btnRevoke" style="background:#b3261e;">Revoke</button>
+      <button id="btnReactivate" style="background:#2e7d32;">Reactivate</button>
+      <button id="btnUnbind" style="background:#8a6d00;">Unbind Device</button>
+    </div>
+    <p class="muted">Unbind Device -- not Revoke -- when a customer lost/replaced their device and needs the SAME key working on a new one.</p>
+    <div class="result" id="revokeResult"></div>
+  </div>
+
+  <div class="card">
+    <h2>All licenses</h2>
+    <div class="row">
+      <div style="flex:1;"><label>Filter by product (optional)<select id="listProduct"><option value="">All products</option></select></label></div>
+    </div>
+    <button id="btnRefreshList">Refresh</button>
+    <div id="listSummary" class="muted" style="margin-top:8px;"></div>
+    <div style="overflow-x:auto;">
+      <table id="listTable"><thead><tr>
+        <th>Customer</th><th>Product</th><th>Key</th><th>Tier</th><th>Status</th><th>Device</th><th>App ver</th><th>Last check-in</th>
+      </tr></thead><tbody></tbody></table>
+    </div>
+  </div>
+
+<script>
+  function adminSecret(){ return document.getElementById("adminSecret").value; }
+  function showResult(el, ok, text){ el.className = "result " + (ok ? "ok" : "err"); el.textContent = text; }
+
+  function post(path, body){
+    return fetch(path, { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify(body) })
+      .then(function(res){ return res.json(); });
+  }
+
+  function loadProductsInto(selectEl, includeBlank){
+    return post("/api/admin/products", { adminSecret: adminSecret(), action: "list" }).then(function(data){
+      selectEl.innerHTML = (includeBlank ? '<option value="">All products</option>' : "") +
+        (data.products || []).map(function(p){ return '<option value="' + p.id + '">' + p.name + " (" + p.id + ")</option>"; }).join("");
+    });
+  }
+
+  document.getElementById("btnCreateProduct").addEventListener("click", function(){
+    var el = document.getElementById("productResult");
+    post("/api/admin/products", {
+      adminSecret: adminSecret(), action: "create",
+      id: document.getElementById("prodId").value.trim(),
+      name: document.getElementById("prodName").value.trim(),
+      currentVersion: document.getElementById("prodVersion").value.trim()
+    }).then(function(data){
+      showResult(el, data.ok, data.ok ? "Product registered: " + data.name + " (" + data.id + ")" : "Failed: " + data.error);
+      if(data.ok){
+        loadProductsInto(document.getElementById("issueProduct"), false);
+        loadProductsInto(document.getElementById("listProduct"), true);
+      }
+    });
+  });
+
+  document.getElementById("btnIssue").addEventListener("click", function(){
+    var el = document.getElementById("issueResult");
+    post("/api/admin/issue", {
+      adminSecret: adminSecret(),
+      productId: document.getElementById("issueProduct").value,
+      tier: document.getElementById("issueTier").value.trim(),
+      customerId: document.getElementById("issueCustomerId").value.trim(),
+      customerName: document.getElementById("issueCustomerName").value.trim(),
+      customerEmail: document.getElementById("issueEmail").value.trim(),
+      customerPhone: document.getElementById("issuePhone").value.trim()
+    }).then(function(data){
+      showResult(el, data.ok, data.ok ?
+        "License created:\n\n" + data.licenseKey + "\n\nCustomer ID (save this to issue them a second product later):\n" + data.customerId :
+        "Failed: " + data.error);
+    });
+  });
+
+  function doRevokeAction(action){
+    var el = document.getElementById("revokeResult");
+    post("/api/admin/revoke", { adminSecret: adminSecret(), licenseKey: document.getElementById("revokeKey").value.trim(), action: action })
+      .then(function(data){
+        showResult(el, data.ok, data.ok ?
+          data.customerName + " (" + data.licenseKey + ") -- status: " + data.status.toUpperCase() +
+            (data.deviceId ? "" : "\nDevice lock cleared -- this key can now be activated fresh on a new device.") :
+          "Failed: " + data.error);
+      });
+  }
+  document.getElementById("btnRevoke").addEventListener("click", function(){ doRevokeAction("revoke"); });
+  document.getElementById("btnReactivate").addEventListener("click", function(){ doRevokeAction("reactivate"); });
+  document.getElementById("btnUnbind").addEventListener("click", function(){ doRevokeAction("unbind"); });
+
+  function refreshList(){
+    var productId = document.getElementById("listProduct").value;
+    post("/api/admin/list", { adminSecret: adminSecret(), productId: productId }).then(function(data){
+      if(!data.ok){ document.getElementById("listSummary").textContent = "Failed: " + data.error; return; }
+      var s = data.summary;
+      document.getElementById("listSummary").textContent =
+        s.totalLicenses + " licenses -- " + s.active + " active, " + s.revoked + " revoked, " +
+        s.activatedDevices + " devices activated, " + s.uniqueCustomers + " unique customers";
+      var tbody = document.querySelector("#listTable tbody");
+      tbody.innerHTML = data.licenses.map(function(l){
+        return "<tr><td>" + l.customer_name + "</td><td>" + l.product_name + "</td><td>" + l.license_key + "</td>" +
+          "<td>" + (l.tier || "") + "</td>" +
+          '<td><span class="badge badge-' + l.status + '">' + l.status + "</span></td>" +
+          "<td>" + (l.device_id ? "bound" : "unbound") + "</td>" +
+          "<td>" + (l.app_version || "") + "</td>" +
+          "<td>" + (l.last_checkin_at ? new Date(l.last_checkin_at).toLocaleString() : "never") + "</td></tr>";
+      }).join("");
+    });
+  }
+  document.getElementById("btnRefreshList").addEventListener("click", refreshList);
+
+  // Populate product dropdowns on load once an admin password is typed in.
+  document.getElementById("adminSecret").addEventListener("blur", function(){
+    if(!adminSecret()) return;
+    loadProductsInto(document.getElementById("issueProduct"), false);
+    loadProductsInto(document.getElementById("listProduct"), true);
+  });
+</script>
+</body>
+</html>

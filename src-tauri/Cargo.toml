@@ -1,0 +1,36 @@
+[package]
+name = "restaurant-billing"
+version = "0.1.0"
+description = "Restaurant billing POS - Tauri desktop shell (Phase 1: SQLite storage)"
+edition = "2021"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-sql = { version = "2", features = ["sqlite"] }
+tauri-plugin-fs = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Real OS-level device identifier (Phase 5 licensing): on Windows this reads
+# HKLM\SOFTWARE\Microsoft\Cryptography\MachineGuid, a value generated once at
+# Windows install time. It survives component swaps (new disk, new RAM, new
+# GPU) but changes on an OS reinstall -- a meaningfully stronger anchor than
+# the old browser-localStorage device id (which any "clear site data" click
+# wiped), while staying honest that it's not a true multi-component hardware
+# fingerprint. See get_device_fingerprint in src/main.rs.
+machine-uid = "0.6"
+# Signed automatic updates (Phase 6). Requires "bundle": {"createUpdaterArtifacts": true}
+# in tauri.conf.json and a signing keypair generated on your own machine via
+# `npm run tauri signer generate -- -w ~/.tauri/restaurant-billing.key` --
+# see README-PHASE1.md for the full one-time setup.
+tauri-plugin-updater = "2"
+tauri-plugin-process = "2"
+
+# No [lib] / [[bin]] section needed: this is a plain binary crate with a
+# single src/main.rs, which Cargo picks up automatically. (An earlier draft
+# of this file declared a [lib] target pointing at src/lib.rs, which doesn't
+# exist in this scaffold -- that would have failed to compile. A lib.rs +
+# main.rs split is only needed for Tauri's mobile targets, which this
+# Windows-only Phase 1 doesn't use.)
