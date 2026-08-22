@@ -12,7 +12,20 @@
     customerId,               optional -- attach to an existing customer
     customerName, customerEmail, customerPhone,  used only if customerId is omitted
     tier,                      optional
-    licenseKey                 optional -- auto-generated if omitted
+    licenseKey,                optional -- auto-generated if omitted
+    expiresAt,                 optional, "YYYY-MM-DD" -- omit/blank for a lifetime license
+    durationDays                optional, alternative to expiresAt: issues a license
+                                that expires N days from now (e.g. 365 for one year).
+                                If both are given, expiresAt wins.
+    amount,                     optional, sale price as a plain number in whichever
+                                unit you enter on the admin form (e.g. 4999 for
+                                Rs.4999) -- for the revenue summary only, never used
+                                for any licensing logic.
+    currency                    optional, e.g. "INR". Defaults to INR if amount is given.
+    isTrial                     optional boolean. If true and neither expiresAt nor
+                                durationDays is given, defaults to a 14-day trial.
+                                Tracked separately from status so trial vs. paid is
+                                visible on the dashboard without guessing from tier.
   }
 */
 
@@ -65,17 +78,50 @@ export async function onRequestPost(context) {
       licenseKey = await generateUniqueLicenseKey(db);
     }
 
+    const isTrial = !!body.isTrial;
+
+    let expiresAt = (body.expiresAt || "").trim() || null;
+    if (!expiresAt && isTrial && !body.durationDays) {
+      expiresAt = new Date(Date.now() + 14 * 86400000).toISOString();
+    }
+    if (!expiresAt && body.durationDays) {
+      const days = Number(body.durationDays);
+      if (!Number.isFinite(days) || days <= 0) {
+        return jsonResponse({ ok: false, error: "durationDays must be a positive number." }, 400);
+      }
+      expiresAt = new Date(Date.now() + days * 86400000).toISOString();
+    }
+    if (expiresAt) {
+      // Accept a bare "YYYY-MM-DD" from the admin form as well as a full
+      // ISO timestamp (from durationDays above) -- normalize both to a
+      // real ISO string so activate.js's Date comparison is reliable.
+      const parsed = new Date(expiresAt);
+      if (isNaN(parsed.getTime())) {
+        return jsonResponse({ ok: false, error: "expiresAt is not a valid date." }, 400);
+      }
+      expiresAt = parsed.toISOString();
+    }
+
+    let amount = null;
+    if (body.amount !== undefined && body.amount !== null && body.amount !== "") {
+      amount = Number(body.amount);
+      if (!Number.isFinite(amount) || amount < 0) {
+        return jsonResponse({ ok: false, error: "amount must be a non-negative number." }, 400);
+      }
+    }
+    const currency = amount !== null ? ((body.currency || "").trim().toUpperCase() || "INR") : null;
+
     const licenseId = crypto.randomUUID();
     await db.prepare(
-      `INSERT INTO licenses (id, license_key, customer_id, product_id, tier, status, issued_at)
-       VALUES (?, ?, ?, ?, ?, 'active', ?)`
-    ).bind(licenseId, licenseKey, customerId, productId, (body.tier || "").trim() || null, now).run();
+      `INSERT INTO licenses (id, license_key, customer_id, product_id, tier, status, issued_at, expires_at, amount, currency, is_trial)
+       VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?)`
+    ).bind(licenseId, licenseKey, customerId, productId, (body.tier || "").trim() || null, now, expiresAt, amount, currency, isTrial ? 1 : 0).run();
 
     await db.prepare(
       "INSERT INTO license_events (license_id, event_type, detail, created_at) VALUES (?, 'issued', ?, ?)"
     ).bind(licenseId, productId, now).run();
 
-    return jsonResponse({ ok: true, licenseKey, customerId, licenseId });
+    return jsonResponse({ ok: true, licenseKey, customerId, licenseId, expiresAt, amount, currency, isTrial });
   } catch (err) {
     return jsonResponse({ ok: false, error: "Server error, please try again." }, 500);
   }

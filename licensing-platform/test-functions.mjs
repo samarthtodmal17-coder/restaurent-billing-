@@ -10,10 +10,11 @@
 import { DatabaseSync } from "node:sqlite";
 import fs from "node:fs";
 
-const schema = fs.readFileSync(new URL("./migrations/0001_init.sql", import.meta.url), "utf8");
 const sqliteDb = new DatabaseSync(":memory:");
 sqliteDb.exec("PRAGMA foreign_keys = ON;"); // D1 enforces FKs by default; mirror that here
-sqliteDb.exec(schema);
+for (const file of ["0001_init.sql", "0002_add_backup_tracking.sql", "0003_add_license_expiry.sql", "0004_notes_and_sale_price.sql", "0005_trial_flag.sql"]) {
+  sqliteDb.exec(fs.readFileSync(new URL(`./migrations/${file}`, import.meta.url), "utf8"));
+}
 
 // D1Database-shaped mock: prepare(sql) -> { bind(...args) -> { first(), run(), all() } }
 function makeD1Mock() {
@@ -143,6 +144,47 @@ function check(label, cond, extra) {
 
   r = await callJson(list, { adminSecret: ADMIN_SECRET, productId: "inventory" });
   check("admin list filters by productId (0 results for unrelated product)", r.data.ok && r.data.licenses.length === 0, r.data);
+
+  // 14. Issue a license that already expired yesterday -- activation must be denied
+  r = await callJson(issue, {
+    adminSecret: ADMIN_SECRET, productId: "restaurant-pos", customerName: "Already Expired Cafe",
+    expiresAt: new Date(Date.now() - 86400000).toISOString().slice(0, 10)
+  });
+  check("issuing with a past expiresAt succeeds (server doesn't reject it up front)", r.status === 200 && r.data.ok, r.data);
+  const expiredKey = r.data.licenseKey;
+  r = await callJson(activate, { licenseKey: expiredKey, productId: "restaurant-pos", deviceId: "device-X", appVersion: "0.1.0", dbVersion: "1" });
+  check("activation denied for an already-expired license", r.status === 403 && r.data.expired === true, r.data);
+
+  // 15. Issue with durationDays, confirm expiresAt is set in the future, activation succeeds
+  r = await callJson(issue, { adminSecret: ADMIN_SECRET, productId: "restaurant-pos", customerName: "Fresh Subscriber", durationDays: 30 });
+  check("issuing with durationDays sets a future expiresAt", r.data.ok && new Date(r.data.expiresAt).getTime() > Date.now(), r.data);
+  const subKey = r.data.licenseKey;
+  r = await callJson(activate, { licenseKey: subKey, productId: "restaurant-pos", deviceId: "device-Y", appVersion: "0.1.0", dbVersion: "1" });
+  check("activation succeeds for a license that hasn't expired yet", r.status === 200 && r.data.ok === true, r.data);
+
+  // 16. Renew the already-expired license by extendDays -- should become active again
+  r = await callJson(revoke, { adminSecret: ADMIN_SECRET, licenseKey: expiredKey, action: "renew", extendDays: 365 });
+  check("renew with extendDays succeeds and returns a future expiresAt", r.status === 200 && r.data.ok && new Date(r.data.expiresAt).getTime() > Date.now(), r.data);
+  r = await callJson(activate, { licenseKey: expiredKey, productId: "restaurant-pos", deviceId: "device-X", appVersion: "0.1.0", dbVersion: "1" });
+  check("previously-expired license activates fine after renewal", r.status === 200 && r.data.ok === true, r.data);
+
+  // 17. Renew with an explicit newExpiresAt
+  r = await callJson(revoke, { adminSecret: ADMIN_SECRET, licenseKey: subKey, action: "renew", newExpiresAt: "2099-01-01" });
+  check("renew with an explicit newExpiresAt sets that exact date", r.status === 200 && r.data.expiresAt.slice(0, 4) === "2099", r.data);
+
+  // 18. Renew with newExpiresAt: "" clears expiry -> lifetime license
+  r = await callJson(revoke, { adminSecret: ADMIN_SECRET, licenseKey: subKey, action: "renew", newExpiresAt: "" });
+  check("renew with an empty newExpiresAt clears expiry (lifetime)", r.status === 200 && r.data.expiresAt === null, r.data);
+  const rowAfterClear = sqliteDb.prepare("SELECT expires_at FROM licenses WHERE license_key = ?").get(subKey);
+  check("cleared expiry is actually NULL in the database", rowAfterClear.expires_at === null, rowAfterClear);
+
+  // 19. Renew with neither extendDays nor newExpiresAt is rejected
+  r = await callJson(revoke, { adminSecret: ADMIN_SECRET, licenseKey: subKey, action: "renew" });
+  check("renew with no date info is rejected with 400", r.status === 400 && !r.data.ok, r.data);
+
+  // 20. admin list summary counts expired licenses separately from active
+  r = await callJson(list, { adminSecret: ADMIN_SECRET, productId: "restaurant-pos" });
+  check("admin list summary has an expired count field", typeof r.data.summary.expired === "number", r.data.summary);
 
   console.log(`\n${results.pass} passed, ${results.fail} failed`);
   process.exit(results.fail ? 1 : 0);

@@ -4557,7 +4557,7 @@ var qrcode = function() {
      ============================================================ */
   var LICENSE_API_BASE = "https://licensing-platform.pages.dev"; // set to the real deployed licensing-platform URL
   var PRODUCT_ID = "restaurant-pos";
-  var APP_VERSION = "0.1.0";
+  var APP_VERSION = "0.1.1";
   var DB_VERSION = "1";
   var LICENSED_TO = "";
 
@@ -4668,6 +4668,24 @@ var qrcode = function() {
       return window.__TAURI__.sql.Database.load(DB_URL);
     }).then(function(db){
       _dbHandle = db;
+      // DIAGNOSTIC (temporary): ask SQLite itself where the open database
+      // file actually lives on disk, and surface it once per launch. This
+      // is here specifically to track down a data-loss report -- data
+      // typed into the app during a session was not surviving an app
+      // restart, and no restaurant.db file could be found anywhere on the
+      // machine via a full disk search. This will show us the exact real
+      // path (or reveal that no file-backed path exists at all, e.g. if
+      // for any reason an in-memory database were opened instead) without
+      // needing devtools, which release builds don't expose. Remove once
+      // the root cause is confirmed fixed.
+      db.select("PRAGMA database_list").then(function(rows){
+        var info = (rows || []).map(function(r){ return r.name + ": " + r.file; }).join("\n");
+        console.log("SQLite database_list:", info);
+        window.__lastDbDiagnostic = info;
+        try{ alert("Database diagnostic (first launch this session):\n\n" + info); }catch(e){}
+      }).catch(function(e){
+        console.error("PRAGMA database_list failed", e);
+      });
       return db;
     });
   }
@@ -10174,6 +10192,18 @@ var qrcode = function() {
       maybeRecheckLicense();
       setTimeout(maybeCheckForUpdate, 5000);
     }
+  }).catch(function(err){
+    // Previously this promise had no .catch at all -- if loadData() ever
+    // rejected (e.g. the SQLite database failed to open), the app would
+    // silently never call startApp() and just sit on a blank/lock screen
+    // with no visible error, and this failure would also never be logged
+    // anywhere a release build's user could see. Surface it loudly so a
+    // storage failure is never mistaken for "the app just isn't loading".
+    console.error("Failed to load data on startup", err);
+    try{
+      alert("Could not load the local database on startup:\n\n" + (err && err.message ? err.message : err) +
+        "\n\nYour existing data has NOT been touched. Please note this exact message and contact support.");
+    }catch(e){}
   });
 })();
 

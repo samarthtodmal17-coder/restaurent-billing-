@@ -1,0 +1,12 @@
+-- Adds license expiry support. Nullable on purpose: NULL means "no
+-- expiry / lifetime license" (today's default behavior, unchanged for
+-- every license already issued). Only licenses that are explicitly given
+-- an expires_at value (or renewed with one) are subject to the expiry
+-- check added in activate.js.
+--
+-- Deliberately NOT a new `licenses.status` value -- status stays
+-- 'active'/'revoked' as-is (see CHECK constraint in 0001_init.sql, which
+-- SQLite/D1 can't easily ALTER). "Expired" is computed at request time by
+-- comparing expires_at to now, the same way an unpaid subscription would
+-- be checked by any billing system, rather than stored as a third status.
+ALTER TABLE licenses ADD COLUMN expires_at TEXT;

@@ -61,6 +61,17 @@ export async function onRequestPost(context) {
       return jsonResponse({ ok: false, revoked: true, error: "This license has been revoked. Contact support." }, 403);
     }
 
+    // expires_at is nullable -- NULL means a lifetime license, unaffected
+    // by this check. Only licenses explicitly given an expiry (via issue
+    // or renew) are checked here. Deliberately checked on every call,
+    // including the same-device heartbeat below, so a license that
+    // expires while the app is already unlocked still gets caught on its
+    // next periodic check-in, not just at first activation.
+    if (license.expires_at && new Date(license.expires_at).getTime() < Date.now()) {
+      await logEvent(db, license.id, "activation_denied", "expired");
+      return jsonResponse({ ok: false, expired: true, error: "This license has expired. Contact support to renew." }, 403);
+    }
+
     const now = new Date().toISOString();
 
     if (!license.device_id) {

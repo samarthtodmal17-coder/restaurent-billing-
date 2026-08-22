@@ -5,82 +5,204 @@
 <title>Licensing Platform -- Private Admin Tool</title>
 <meta name="robots" content="noindex, nofollow">
 <style>
-  body{font-family:system-ui,sans-serif;max-width:720px;margin:40px auto;padding:0 16px;color:#1c2230;}
-  h1{font-size:18px;} h2{font-size:15px;margin-top:0;}
+  *{box-sizing:border-box;}
+  body{font-family:system-ui,sans-serif;margin:0;padding:0;color:#1c2230;background:#f4f2ea;}
+  h1{font-size:17px;margin:0;} h2{font-size:15px;margin-top:0;} h3{font-size:13px;}
   label{display:block;margin-top:14px;font-weight:600;font-size:13px;}
-  input,select{width:100%;padding:9px 10px;border:1px solid #ccc;border-radius:6px;font-size:14px;box-sizing:border-box;margin-top:4px;}
-  button{margin-top:18px;padding:10px 18px;background:#1c2c52;color:#fff;border:none;border-radius:6px;font-size:14px;cursor:pointer;}
+  input,select{width:100%;padding:9px 10px;border:1px solid #ccc;border-radius:6px;font-size:14px;box-sizing:border-box;margin-top:4px;background:#fff;}
+  textarea{width:100%;padding:9px 10px;border:1px solid #ccc;border-radius:6px;font-size:13px;box-sizing:border-box;margin-top:4px;font-family:inherit;resize:vertical;background:#fff;}
+  button{padding:10px 18px;background:#1c2c52;color:#fff;border:none;border-radius:6px;font-size:14px;cursor:pointer;}
   .result{margin-top:16px;padding:12px;border-radius:6px;font-size:13px;white-space:pre-wrap;display:none;}
   .ok{background:#e8f5e9;color:#1b5e20;display:block;}
   .err{background:#fdecea;color:#b3261e;display:block;}
   .muted{color:#666;font-size:12px;margin-top:4px;}
-  .card{border:1px solid #e5e1d5;border-radius:10px;padding:18px;margin-top:24px;}
+  .card{border:1px solid #e5e1d5;border-radius:10px;padding:18px;background:#fff;}
   table{width:100%;border-collapse:collapse;margin-top:12px;font-size:12px;}
-  th,td{text-align:left;padding:6px 8px;border-bottom:1px solid #eee;}
-  .badge{padding:2px 8px;border-radius:10px;font-size:11px;}
+  th,td{text-align:left;padding:6px 8px;border-bottom:1px solid #eee;vertical-align:top;}
+  .badge{padding:2px 8px;border-radius:10px;font-size:11px;display:inline-block;}
   .badge-active{background:#e8f5e9;color:#1b5e20;} .badge-revoked{background:#fdecea;color:#b3261e;}
+  .badge-expired{background:#fff4e0;color:#8a6d00;}
+  .badge-trial{background:#e8eef7;color:#1c2c52;}
   .row{display:flex;gap:10px;flex-wrap:wrap;}
+  .statGrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;margin-top:12px;}
+  .statBox{background:#f7f5ee;border-radius:8px;padding:12px;text-align:center;}
+  .statBox .num{font-size:22px;font-weight:700;color:#1c2c52;}
+  .statBox .lbl{font-size:11px;color:#666;margin-top:2px;}
+  ul.feed{font-size:12px;padding-left:18px;margin:8px 0 0;}
+  ul.feed li{margin-bottom:6px;}
+
+  /* -- top bar -- */
+  .topbar{background:#1c2c52;color:#fff;padding:12px 20px;display:flex;align-items:center;gap:16px;flex-wrap:wrap;position:sticky;top:0;z-index:20;}
+  .topbar h1{color:#fff;}
+  .topbar .muted{color:#c7cfe0;}
+  .topbar .row{align-items:center;flex:1;justify-content:flex-end;}
+  .topbar input{margin-top:0;width:200px;}
+  .topbar button{background:#3a4b78;padding:8px 14px;font-size:13px;}
+
+  /* -- layout: sidebar + main -- */
+  .layout{display:flex;align-items:flex-start;max-width:1100px;margin:0 auto;padding:20px 16px 60px;gap:20px;}
+  .sidebar{width:190px;flex-shrink:0;position:sticky;top:64px;}
+  .sidebar button{display:flex;justify-content:space-between;align-items:center;width:100%;text-align:left;background:transparent;color:#1c2230;padding:10px 12px;border-radius:8px;font-size:13px;font-weight:600;margin-bottom:4px;}
+  .sidebar button:hover{background:#eae6d8;}
+  .sidebar button.active{background:#1c2c52;color:#fff;}
+  .sidebar .navBadge{background:rgba(0,0,0,0.12);border-radius:10px;padding:1px 7px;font-size:11px;font-weight:600;}
+  .sidebar button.active .navBadge{background:rgba(255,255,255,0.2);}
+  .main{flex:1;min-width:0;}
+  .section{display:none;}
+  .section.active{display:block;}
+  .section > .card + .card{margin-top:20px;}
+
+  /* -- overlay panels (Customer History / Manage License) -- */
+  .overlay{position:fixed;inset:0;background:rgba(20,20,30,0.5);display:flex;align-items:flex-start;justify-content:center;padding:5vh 16px;overflow-y:auto;z-index:50;}
+  .overlay.hidden{display:none;}
+  .overlayPanel{background:#fff;border-radius:12px;padding:22px;max-width:620px;width:100%;position:relative;}
+  .overlayClose{position:absolute;top:14px;right:14px;background:#eee;color:#333;width:28px;height:28px;padding:0;border-radius:50%;font-size:15px;line-height:1;}
+
+  @media (max-width: 760px){
+    .layout{flex-direction:column;}
+    .sidebar{width:100%;position:static;display:flex;gap:6px;overflow-x:auto;}
+    .sidebar button{width:auto;white-space:nowrap;}
+  }
 </style>
 </head>
 <body>
-  <h1>Licensing Platform -- Private Admin Tool</h1>
-  <p class="muted">Not linked from anywhere -- keep this URL private. Talks to your own /api/admin/* endpoints, protected by the admin password below (your ADMIN_SECRET environment variable).</p>
 
-  <label>Admin password
-    <input type="password" id="adminSecret" autocomplete="off">
-  </label>
-
-  <div class="card">
-    <h2>Register a product (one-time, per product)</h2>
-    <p class="muted">Do this once per product before issuing any licenses for it -- e.g. once for "Restaurant POS", again later when you launch "Inventory".</p>
-    <div class="row">
-      <div style="flex:1;"><label>Product ID<input type="text" id="prodId" placeholder="e.g. restaurant-pos"></label></div>
-      <div style="flex:1;"><label>Product name<input type="text" id="prodName" placeholder="e.g. Restaurant POS"></label></div>
+  <div class="topbar">
+    <div>
+      <h1>Licensing Platform</h1>
+      <div class="muted" style="font-size:11px;">Private admin tool -- not linked from anywhere, keep this URL to yourself.</div>
     </div>
-    <label>Current version (optional)<input type="text" id="prodVersion" placeholder="0.1.0"></label>
-    <button id="btnCreateProduct">Register Product</button>
-    <div class="result" id="productResult"></div>
+    <div class="row">
+      <input type="password" id="adminSecret" autocomplete="off" placeholder="Admin password">
+      <button id="btnLogout">Log out</button>
+    </div>
+  </div>
+  <div style="max-width:1100px;margin:0 auto;padding:0 16px;">
+    <p class="muted" id="loginNote" style="margin-top:10px;"></p>
   </div>
 
-  <div class="card">
-    <h2>Issue a new license</h2>
-    <div class="row">
-      <div style="flex:1;"><label>Product<select id="issueProduct"></select></label></div>
-      <div style="flex:1;"><label>Tier (optional)<input type="text" id="issueTier" placeholder="Standard / Pro"></label></div>
+  <div class="layout">
+    <div class="sidebar">
+      <button type="button" class="navBtn active" data-section="dashboard">Dashboard</button>
+      <button type="button" class="navBtn" data-section="licenses">Licenses <span class="navBadge" id="navBadgeLicenses">--</span></button>
+      <button type="button" class="navBtn" data-section="issue">Issue License</button>
+      <button type="button" class="navBtn" data-section="products">Products</button>
     </div>
-    <label>Existing customer ID (leave blank for a new customer)<input type="text" id="issueCustomerId" placeholder="only if this customer already has another license"></label>
-    <label>Customer / restaurant name (required if no customer ID above)<input type="text" id="issueCustomerName" placeholder="e.g. Spice Route Kitchen"></label>
-    <div class="row">
-      <div style="flex:1;"><label>Email (optional)<input type="text" id="issueEmail"></label></div>
-      <div style="flex:1;"><label>Phone (optional)<input type="text" id="issuePhone"></label></div>
+
+    <div class="main">
+
+      <!-- ===== Dashboard ===== -->
+      <div class="section active" data-section="dashboard">
+        <div class="card">
+          <h2>Dashboard</h2>
+          <div class="statGrid" id="dashboardStats"></div>
+          <div id="dashboardRevenue" class="muted" style="margin-top:10px;"></div>
+        </div>
+        <div class="card">
+          <h3>Expiring in the next 30 days</h3>
+          <ul class="feed" id="dashboardExpiring"><li class="muted">Loading...</li></ul>
+        </div>
+        <div class="card">
+          <h3>Inactive 14+ days (no app check-in)</h3>
+          <ul class="feed" id="dashboardInactive"><li class="muted">Loading...</li></ul>
+        </div>
+        <div class="card">
+          <h3>Recent activity</h3>
+          <ul class="feed" id="dashboardActivity"><li class="muted">Loading...</li></ul>
+        </div>
+      </div>
+
+      <!-- ===== Licenses ===== -->
+      <div class="section" data-section="licenses">
+        <div class="card">
+          <h2>All licenses</h2>
+          <div class="row">
+            <div style="flex:1;"><label>Search (name, email, phone, or key)<input type="text" id="listSearch" placeholder="e.g. Spice Route, or REST-4F2A"></label></div>
+            <div style="flex:1;"><label>Filter by product (optional)<select id="listProduct"><option value="">All products</option></select></label></div>
+          </div>
+          <div class="row" style="margin-top:14px;">
+            <button id="btnRefreshList">Refresh</button>
+            <button id="btnExportCsv" style="background:#5c6470;">Export CSV</button>
+          </div>
+          <div id="listSummary" class="muted" style="margin-top:8px;"></div>
+          <div style="overflow-x:auto;">
+            <table id="listTable"><thead><tr>
+              <th>Customer</th><th>Product</th><th>Key</th><th>Tier</th><th>Status</th><th>Expires</th><th>Device</th><th>App ver</th><th>Last check-in</th><th></th>
+            </tr></thead><tbody></tbody></table>
+          </div>
+        </div>
+      </div>
+
+      <!-- ===== Issue License ===== -->
+      <div class="section" data-section="issue">
+        <div class="card">
+          <h2>Issue a new license</h2>
+          <div class="row">
+            <div style="flex:1;"><label>Product<select id="issueProduct"></select></label></div>
+            <div style="flex:1;"><label>Tier (optional)<input type="text" id="issueTier" placeholder="Standard / Pro"></label></div>
+          </div>
+          <label>Existing customer ID (leave blank for a new customer)<input type="text" id="issueCustomerId" placeholder="only if this customer already has another license"></label>
+          <label>Customer / restaurant name (required if no customer ID above)<input type="text" id="issueCustomerName" placeholder="e.g. Spice Route Kitchen"></label>
+          <div class="row">
+            <div style="flex:1;"><label>Email (optional)<input type="text" id="issueEmail"></label></div>
+            <div style="flex:1;"><label>Phone (optional)<input type="text" id="issuePhone"></label></div>
+          </div>
+          <label style="display:flex;align-items:center;gap:8px;font-weight:600;font-size:13px;">
+            <input type="checkbox" id="issueIsTrial" style="width:auto;margin-top:0;"> Trial license (defaults to 14 days, unless you set a length below)
+          </label>
+          <label>License length<select id="issueDuration">
+            <option value="">No expiry (lifetime)</option>
+            <option value="30">1 month</option>
+            <option value="365">1 year</option>
+            <option value="custom">Custom date...</option>
+          </select></label>
+          <label id="issueCustomDateWrap" style="display:none;">Expires on<input type="date" id="issueCustomDate"></label>
+          <div class="row">
+            <div style="flex:1;"><label>Sale price (optional)<input type="number" id="issueAmount" placeholder="e.g. 4999" min="0"></label></div>
+            <div style="flex:1;"><label>Currency<select id="issueCurrency">
+              <option value="INR">INR (Rs.)</option>
+              <option value="USD">USD ($)</option>
+            </select></label></div>
+          </div>
+          <p class="muted">Sale price is only used for your revenue summary on the dashboard -- it's never checked by the app itself.</p>
+          <button id="btnIssue" style="margin-top:18px;">Generate &amp; Save License</button>
+          <div class="result" id="issueResult"></div>
+        </div>
+      </div>
+
+      <!-- ===== Products ===== -->
+      <div class="section" data-section="products">
+        <div class="card">
+          <h2>Register a product (one-time, per product)</h2>
+          <p class="muted">Do this once per product before issuing any licenses for it -- e.g. once for "Restaurant POS", again later when you launch "Inventory".</p>
+          <div class="row">
+            <div style="flex:1;"><label>Product ID<input type="text" id="prodId" placeholder="e.g. restaurant-pos"></label></div>
+            <div style="flex:1;"><label>Product name<input type="text" id="prodName" placeholder="e.g. Restaurant POS"></label></div>
+          </div>
+          <label>Current version (optional)<input type="text" id="prodVersion" placeholder="0.1.0"></label>
+          <button id="btnCreateProduct" style="margin-top:18px;">Register Product</button>
+          <div class="result" id="productResult"></div>
+        </div>
+      </div>
+
     </div>
-    <button id="btnIssue">Generate &amp; Save License</button>
-    <div class="result" id="issueResult"></div>
   </div>
 
-  <div class="card">
-    <h2>Revoke / reactivate / unbind</h2>
-    <label>License key<input type="text" id="revokeKey" placeholder="e.g. REST-4F2A-9K3P-7Q1Z"></label>
-    <div class="row">
-      <button id="btnRevoke" style="background:#b3261e;">Revoke</button>
-      <button id="btnReactivate" style="background:#2e7d32;">Reactivate</button>
-      <button id="btnUnbind" style="background:#8a6d00;">Unbind Device</button>
+  <!-- ===== Overlay: Manage License ===== -->
+  <div class="overlay hidden" id="manageOverlay">
+    <div class="overlayPanel">
+      <button type="button" class="overlayClose" id="btnCloseManage">&times;</button>
+      <h2>Manage license</h2>
+      <div id="manageBody"></div>
     </div>
-    <p class="muted">Unbind Device -- not Revoke -- when a customer lost/replaced their device and needs the SAME key working on a new one.</p>
-    <div class="result" id="revokeResult"></div>
   </div>
 
-  <div class="card">
-    <h2>All licenses</h2>
-    <div class="row">
-      <div style="flex:1;"><label>Filter by product (optional)<select id="listProduct"><option value="">All products</option></select></label></div>
-    </div>
-    <button id="btnRefreshList">Refresh</button>
-    <div id="listSummary" class="muted" style="margin-top:8px;"></div>
-    <div style="overflow-x:auto;">
-      <table id="listTable"><thead><tr>
-        <th>Customer</th><th>Product</th><th>Key</th><th>Tier</th><th>Status</th><th>Device</th><th>App ver</th><th>Last check-in</th>
-      </tr></thead><tbody></tbody></table>
+  <!-- ===== Overlay: Customer History ===== -->
+  <div class="overlay hidden" id="historyOverlay">
+    <div class="overlayPanel">
+      <button type="button" class="overlayClose" id="btnCloseHistory">&times;</button>
+      <h2>Customer history</h2>
+      <div id="historyBody"></div>
     </div>
   </div>
 
@@ -93,6 +215,18 @@
       .then(function(res){ return res.json(); });
   }
 
+  // ---------- Sidebar navigation ----------
+  Array.prototype.forEach.call(document.querySelectorAll(".navBtn"), function(btn){
+    btn.addEventListener("click", function(){
+      var section = this.getAttribute("data-section");
+      Array.prototype.forEach.call(document.querySelectorAll(".navBtn"), function(b){ b.classList.remove("active"); });
+      Array.prototype.forEach.call(document.querySelectorAll(".section"), function(s){ s.classList.remove("active"); });
+      this.classList.add("active");
+      document.querySelector('.section[data-section="' + section + '"]').classList.add("active");
+    });
+  });
+
+  // ---------- Products ----------
   function loadProductsInto(selectEl, includeBlank){
     return post("/api/admin/products", { adminSecret: adminSecret(), action: "list" }).then(function(data){
       selectEl.innerHTML = (includeBlank ? '<option value="">All products</option>' : "") +
@@ -116,9 +250,15 @@
     });
   });
 
+  // ---------- Issue license ----------
+  document.getElementById("issueDuration").addEventListener("change", function(){
+    document.getElementById("issueCustomDateWrap").style.display = (this.value === "custom") ? "" : "none";
+  });
+
   document.getElementById("btnIssue").addEventListener("click", function(){
     var el = document.getElementById("issueResult");
-    post("/api/admin/issue", {
+    var duration = document.getElementById("issueDuration").value;
+    var payload = {
       adminSecret: adminSecret(),
       productId: document.getElementById("issueProduct").value,
       tier: document.getElementById("issueTier").value.trim(),
@@ -126,54 +266,353 @@
       customerName: document.getElementById("issueCustomerName").value.trim(),
       customerEmail: document.getElementById("issueEmail").value.trim(),
       customerPhone: document.getElementById("issuePhone").value.trim()
-    }).then(function(data){
+    };
+    if(duration === "custom"){
+      payload.expiresAt = document.getElementById("issueCustomDate").value;
+    } else if(duration){
+      payload.durationDays = Number(duration);
+    }
+    var amountVal = document.getElementById("issueAmount").value.trim();
+    if(amountVal){
+      payload.amount = Number(amountVal);
+      payload.currency = document.getElementById("issueCurrency").value;
+    }
+    if(document.getElementById("issueIsTrial").checked){
+      payload.isTrial = true;
+    }
+    post("/api/admin/issue", payload).then(function(data){
+      var expiryLine = data.ok ? (data.expiresAt ? "\nExpires: " + new Date(data.expiresAt).toLocaleDateString() : "\nExpires: never (lifetime)") : "";
+      var trialLine = data.ok && data.isTrial ? "\n(Marked as a trial license.)" : "";
       showResult(el, data.ok, data.ok ?
-        "License created:\n\n" + data.licenseKey + "\n\nCustomer ID (save this to issue them a second product later):\n" + data.customerId :
+        "License created:\n\n" + data.licenseKey + expiryLine + trialLine + "\n\nCustomer ID (save this to issue them a second product later):\n" + data.customerId :
         "Failed: " + data.error);
+      if(data.ok){ refreshList(); loadDashboard(); }
     });
   });
 
-  function doRevokeAction(action){
-    var el = document.getElementById("revokeResult");
-    post("/api/admin/revoke", { adminSecret: adminSecret(), licenseKey: document.getElementById("revokeKey").value.trim(), action: action })
-      .then(function(data){
-        showResult(el, data.ok, data.ok ?
-          data.customerName + " (" + data.licenseKey + ") -- status: " + data.status.toUpperCase() +
-            (data.deviceId ? "" : "\nDevice lock cleared -- this key can now be activated fresh on a new device.") :
-          "Failed: " + data.error);
-      });
-  }
-  document.getElementById("btnRevoke").addEventListener("click", function(){ doRevokeAction("revoke"); });
-  document.getElementById("btnReactivate").addEventListener("click", function(){ doRevokeAction("reactivate"); });
-  document.getElementById("btnUnbind").addEventListener("click", function(){ doRevokeAction("unbind"); });
+  // ---------- Licenses table ----------
+  var lastListLicenses = [];
 
   function refreshList(){
     var productId = document.getElementById("listProduct").value;
-    post("/api/admin/list", { adminSecret: adminSecret(), productId: productId }).then(function(data){
+    var search = document.getElementById("listSearch").value.trim();
+    return post("/api/admin/list", { adminSecret: adminSecret(), productId: productId, search: search }).then(function(data){
       if(!data.ok){ document.getElementById("listSummary").textContent = "Failed: " + data.error; return; }
+      lastListLicenses = data.licenses;
       var s = data.summary;
       document.getElementById("listSummary").textContent =
-        s.totalLicenses + " licenses -- " + s.active + " active, " + s.revoked + " revoked, " +
+        s.totalLicenses + " licenses -- " + s.active + " active, " + s.expired + " expired, " + s.revoked + " revoked, " +
         s.activatedDevices + " devices activated, " + s.uniqueCustomers + " unique customers";
+      document.getElementById("navBadgeLicenses").textContent = s.totalLicenses;
+      var now = Date.now();
       var tbody = document.querySelector("#listTable tbody");
       tbody.innerHTML = data.licenses.map(function(l){
-        return "<tr><td>" + l.customer_name + "</td><td>" + l.product_name + "</td><td>" + l.license_key + "</td>" +
+        var isExpired = l.expires_at && new Date(l.expires_at).getTime() < now;
+        var expiresCell = l.expires_at ?
+          ('<span class="badge ' + (isExpired ? "badge-expired" : "") + '">' + new Date(l.expires_at).toLocaleDateString() + (isExpired ? " (expired)" : "") + "</span>") :
+          "no expiry";
+        return "<tr><td>" + l.customer_name + '<br><span class="muted" style="font-size:10px;">' + l.customer_id + "</span></td>" +
+          "<td>" + l.product_name + "</td><td>" + l.license_key + "</td>" +
           "<td>" + (l.tier || "") + "</td>" +
-          '<td><span class="badge badge-' + l.status + '">' + l.status + "</span></td>" +
-          "<td>" + (l.device_id ? "bound" : "unbound") + "</td>" +
+          '<td><span class="badge badge-' + l.status + '">' + l.status + "</span>" +
+          (l.is_trial ? ' <span class="badge badge-trial">trial</span>' : "") + "</td>" +
+          "<td>" + expiresCell + "</td>" +
+          "<td>" + (l.device_id ? (l.device_label || "bound") : "unbound") + "</td>" +
           "<td>" + (l.app_version || "") + "</td>" +
-          "<td>" + (l.last_checkin_at ? new Date(l.last_checkin_at).toLocaleString() : "never") + "</td></tr>";
+          "<td>" + (l.last_checkin_at ? new Date(l.last_checkin_at).toLocaleString() : "never") + "</td>" +
+          '<td style="white-space:nowrap;">' +
+            '<button type="button" class="btnManage" data-key="' + l.license_key + '" style="margin:0 4px 4px 0;padding:5px 9px;font-size:11px;">Manage</button>' +
+            '<button type="button" class="btnHistory" data-customer-id="' + l.customer_id + '" style="margin:0;padding:5px 9px;font-size:11px;background:#5c6470;">History</button>' +
+          "</td></tr>";
       }).join("");
+      Array.prototype.forEach.call(document.querySelectorAll(".btnHistory"), function(btn){
+        btn.addEventListener("click", function(){ openCustomerHistory(this.getAttribute("data-customer-id")); });
+      });
+      Array.prototype.forEach.call(document.querySelectorAll(".btnManage"), function(btn){
+        btn.addEventListener("click", function(){ openManageLicense(this.getAttribute("data-key")); });
+      });
     });
   }
   document.getElementById("btnRefreshList").addEventListener("click", refreshList);
+  document.getElementById("listSearch").addEventListener("keydown", function(e){ if(e.key === "Enter") refreshList(); });
+  document.getElementById("listProduct").addEventListener("change", refreshList);
 
-  // Populate product dropdowns on load once an admin password is typed in.
-  document.getElementById("adminSecret").addEventListener("blur", function(){
-    if(!adminSecret()) return;
+  function csvEscape(v){
+    var s = (v === null || v === undefined) ? "" : String(v);
+    if(/[",\n]/.test(s)) s = '"' + s.replace(/"/g, '""') + '"';
+    return s;
+  }
+  document.getElementById("btnExportCsv").addEventListener("click", function(){
+    if(!lastListLicenses.length){ alert("Nothing to export -- click Refresh first."); return; }
+    var header = ["Customer","Customer ID","Product","License Key","Tier","Status","Trial","Expires","Device","Device Label","App Version","Last Check-in","Amount","Currency"];
+    var rows = lastListLicenses.map(function(l){
+      return [l.customer_name, l.customer_id, l.product_name, l.license_key, l.tier || "", l.status, l.is_trial ? "yes" : "no",
+        l.expires_at ? new Date(l.expires_at).toLocaleDateString() : "",
+        l.device_id ? "bound" : "unbound", l.device_label || "", l.app_version || "",
+        l.last_checkin_at ? new Date(l.last_checkin_at).toLocaleString() : "",
+        l.amount != null ? l.amount : "", l.currency || ""].map(csvEscape).join(",");
+    });
+    var csv = [header.map(csvEscape).join(",")].concat(rows).join("\n");
+    var blob = new Blob([csv], { type: "text/csv" });
+    var a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "licenses-" + new Date().toISOString().slice(0,10) + ".csv";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  });
+
+  // ---------- Manage License overlay (revoke/reactivate/unbind/renew/convert/label) ----------
+  function closeManage(){ document.getElementById("manageOverlay").classList.add("hidden"); }
+  document.getElementById("btnCloseManage").addEventListener("click", closeManage);
+  document.getElementById("manageOverlay").addEventListener("click", function(e){ if(e.target === this) closeManage(); });
+
+  function openManageLicense(licenseKey){
+    document.getElementById("manageOverlay").classList.remove("hidden");
+    renderManagePanel(licenseKey);
+  }
+
+  function renderManagePanel(licenseKey, flash){
+    var body = document.getElementById("manageBody");
+    var l = lastListLicenses.filter(function(x){ return x.license_key === licenseKey; })[0];
+    if(!l){ body.innerHTML = "<p>License not found in the current list -- try Refresh on the Licenses page.</p>"; return; }
+    var now = Date.now();
+    var expired = l.expires_at && new Date(l.expires_at).getTime() < now;
+
+    body.innerHTML =
+      "<p><strong>" + l.customer_name + "</strong> -- " + l.product_name + "<br>" +
+      '<span class="muted">' + l.license_key + "</span></p>" +
+      '<p><span class="badge badge-' + l.status + '">' + l.status + "</span> " +
+      (l.is_trial ? '<span class="badge badge-trial">trial</span> ' : "") +
+      (l.expires_at ? ('<span class="badge ' + (expired ? "badge-expired" : "") + '">expires ' + new Date(l.expires_at).toLocaleDateString() + (expired ? " (expired)" : "") + "</span>") : "no expiry") +
+      "</p>" +
+      '<div class="row">' +
+        '<button type="button" id="mRevoke" style="background:#b3261e;">Revoke</button>' +
+        '<button type="button" id="mReactivate" style="background:#2e7d32;">Reactivate</button>' +
+        '<button type="button" id="mUnbind" style="background:#8a6d00;">Unbind Device</button>' +
+      "</div>" +
+      '<p class="muted">Unbind Device -- not Revoke -- when a customer lost/replaced their device and needs the SAME key working on a new one.</p>' +
+      '<div class="row" style="margin-top:14px;align-items:flex-end;">' +
+        '<div style="flex:1;"><label>Extend by<select id="mExtendDays">' +
+          '<option value="30">1 month</option><option value="365" selected>1 year</option>' +
+        "</select></label></div>" +
+        '<button type="button" id="mRenew" style="background:#1c2c52;">Renew</button>' +
+        '<button type="button" id="mLifetime" style="background:#5c6470;">Make Lifetime</button>' +
+      "</div>" +
+      (l.is_trial ? '<button type="button" id="mConvert" style="margin-top:12px;background:#1c2c52;">Convert to Paid (1 year)</button>' : "") +
+      (l.device_id ?
+        '<div class="row" style="margin-top:16px;align-items:center;">' +
+          '<div style="flex:1;"><label>Device label<input type="text" id="mDeviceLabel" placeholder="e.g. Front counter PC" value="' + (l.device_label || "").replace(/"/g, "&quot;") + '"></label></div>' +
+          '<button type="button" id="mSaveLabel" style="background:#5c6470;">Save Label</button>' +
+        "</div>" : "") +
+      '<div class="result" id="manageResult"></div>' +
+      '<button type="button" id="mViewHistory" style="margin-top:16px;background:#5c6470;">View full customer history</button>';
+
+    // Re-render (after a successful action) rebuilds this whole panel from
+    // fresh data, which would otherwise wipe out the success message the
+    // instant it appears. So on success we pass the message through to the
+    // *next* render instead of showing it on this soon-to-be-replaced one.
+    if(flash){
+      showResult(document.getElementById("manageResult"), flash.ok, flash.text);
+    }
+
+    function afterAction(data, successPrefix){
+      if(!data.ok){
+        showResult(document.getElementById("manageResult"), false, "Failed: " + data.error);
+        return;
+      }
+      refreshList().then(function(){ renderManagePanel(licenseKey, { ok: true, text: successPrefix }); });
+      loadDashboard();
+    }
+
+    document.getElementById("mRevoke").addEventListener("click", function(){
+      post("/api/admin/revoke", { adminSecret: adminSecret(), licenseKey: licenseKey, action: "revoke" })
+        .then(function(d){ afterAction(d, "License revoked."); });
+    });
+    document.getElementById("mReactivate").addEventListener("click", function(){
+      post("/api/admin/revoke", { adminSecret: adminSecret(), licenseKey: licenseKey, action: "reactivate" })
+        .then(function(d){ afterAction(d, "License reactivated."); });
+    });
+    document.getElementById("mUnbind").addEventListener("click", function(){
+      post("/api/admin/revoke", { adminSecret: adminSecret(), licenseKey: licenseKey, action: "unbind" })
+        .then(function(d){ afterAction(d, "Device unbound -- this key can now be activated fresh on a new device."); });
+    });
+    document.getElementById("mRenew").addEventListener("click", function(){
+      var days = Number(document.getElementById("mExtendDays").value);
+      post("/api/admin/revoke", { adminSecret: adminSecret(), licenseKey: licenseKey, action: "renew", extendDays: days })
+        .then(function(d){ afterAction(d, "Renewed -- new expiry: " + (d.expiresAt ? new Date(d.expiresAt).toLocaleDateString() : "lifetime")); });
+    });
+    document.getElementById("mLifetime").addEventListener("click", function(){
+      post("/api/admin/revoke", { adminSecret: adminSecret(), licenseKey: licenseKey, action: "renew", newExpiresAt: "" })
+        .then(function(d){ afterAction(d, "License is now lifetime (no expiry)."); });
+    });
+    var convertBtn = document.getElementById("mConvert");
+    if(convertBtn){
+      convertBtn.addEventListener("click", function(){
+        post("/api/admin/revoke", { adminSecret: adminSecret(), licenseKey: licenseKey, action: "renew", extendDays: 365, clearTrial: true })
+          .then(function(d){ afterAction(d, "Converted to a paid license, extended 1 year."); });
+      });
+    }
+    var saveLabelBtn = document.getElementById("mSaveLabel");
+    if(saveLabelBtn){
+      saveLabelBtn.addEventListener("click", function(){
+        var val = document.getElementById("mDeviceLabel").value;
+        post("/api/admin/label-device", { adminSecret: adminSecret(), licenseKey: licenseKey, deviceLabel: val })
+          .then(function(d){ afterAction(d, "Device label saved."); });
+      });
+    }
+    document.getElementById("mViewHistory").addEventListener("click", function(){
+      closeManage();
+      openCustomerHistory(l.customer_id);
+    });
+  }
+
+  // ---------- Dashboard ----------
+  function loadDashboard(){
+    post("/api/admin/dashboard", { adminSecret: adminSecret() }).then(function(data){
+      if(!data.ok) return;
+      var t = data.totals;
+      document.getElementById("dashboardStats").innerHTML = [
+        ["Customers", t.totalCustomers], ["Total licenses", t.totalLicenses],
+        ["Active", t.activeLicenses], ["Expired", t.expiredLicenses], ["Revoked", t.revokedLicenses]
+      ].map(function(pair){
+        return '<div class="statBox"><div class="num">' + pair[1] + '</div><div class="lbl">' + pair[0] + '</div></div>';
+      }).join("");
+
+      function fmtMoney(rows){
+        if(!rows.length) return "none recorded";
+        return rows.map(function(r){ return r.currency + " " + Number(r.total).toLocaleString() + " (" + r.count + " sales)"; }).join(", ");
+      }
+      document.getElementById("dashboardRevenue").innerHTML =
+        "<strong>Revenue this month:</strong> " + fmtMoney(data.revenueThisMonth) +
+        "<br><strong>Revenue all-time:</strong> " + fmtMoney(data.revenueAllTime);
+
+      var expEl = document.getElementById("dashboardExpiring");
+      expEl.innerHTML = data.expiringSoon.length ? data.expiringSoon.map(function(l, i){
+        var daysLeft = Math.ceil((new Date(l.expires_at).getTime() - Date.now()) / 86400000);
+        return "<li>" + l.customer_name + " -- " + l.product_name + " -- expires " + new Date(l.expires_at).toLocaleDateString() +
+          " (" + daysLeft + " day" + (daysLeft === 1 ? "" : "s") + " left) " +
+          '<button type="button" class="btnCopyReminder" data-idx="' + i + '" style="margin:0 0 0 6px;padding:3px 8px;font-size:10px;background:#5c6470;">Copy Reminder</button></li>';
+      }).join("") : '<li class="muted">Nothing expiring in the next 30 days.</li>';
+      Array.prototype.forEach.call(document.querySelectorAll(".btnCopyReminder"), function(btn){
+        btn.addEventListener("click", function(){
+          var l = data.expiringSoon[Number(this.getAttribute("data-idx"))];
+          var msg = "Hi " + l.customer_name + ", this is a reminder from Manokshmi Technologies that your " +
+            l.product_name + " license (key " + l.license_key + ") expires on " +
+            new Date(l.expires_at).toLocaleDateString() + ". Reply here or call +91 70306 00711 to renew and keep your billing software active. Thank you!";
+          navigator.clipboard.writeText(msg).then(function(){
+            var original = btn.textContent;
+            btn.textContent = "Copied!";
+            setTimeout(function(){ btn.textContent = original; }, 1500);
+          });
+        });
+      });
+
+      var inactEl = document.getElementById("dashboardInactive");
+      inactEl.innerHTML = data.inactiveCustomers.length ? data.inactiveCustomers.map(function(c){
+        var daysAgo = Math.floor((Date.now() - new Date(c.last_checkin_at).getTime()) / 86400000);
+        return "<li>" + c.customer_name + " -- " + c.product_name + " -- last seen " + daysAgo + " days ago</li>";
+      }).join("") : '<li class="muted">Everyone with a bound device has checked in within the last 14 days.</li>';
+
+      var actEl = document.getElementById("dashboardActivity");
+      actEl.innerHTML = data.recentActivity.length ? data.recentActivity.map(function(e){
+        return "<li>" + new Date(e.created_at).toLocaleString() + " -- " + e.event_type + " -- " +
+          e.customer_name + " -- " + e.product_name + " (" + e.license_key + ")</li>";
+      }).join("") : '<li class="muted">No activity yet.</li>';
+    });
+  }
+
+  // ---------- Customer History overlay ----------
+  function closeHistory(){ document.getElementById("historyOverlay").classList.add("hidden"); }
+  document.getElementById("btnCloseHistory").addEventListener("click", closeHistory);
+  document.getElementById("historyOverlay").addEventListener("click", function(e){ if(e.target === this) closeHistory(); });
+
+  function openCustomerHistory(customerId){
+    document.getElementById("historyOverlay").classList.remove("hidden");
+    var body = document.getElementById("historyBody");
+    body.textContent = "Loading...";
+    post("/api/admin/customer-history", { adminSecret: adminSecret(), customerId: customerId }).then(function(data){
+      if(!data.ok){ body.textContent = "Failed: " + data.error; return; }
+      var c = data.customer;
+      var now = Date.now();
+      var licensesHtml = data.licenses.map(function(l){
+        var expired = l.expires_at && new Date(l.expires_at).getTime() < now;
+        return "<li><strong>" + l.product_name + "</strong> -- " + l.license_key +
+          ' -- <span class="badge badge-' + l.status + '">' + l.status + "</span>" +
+          (l.is_trial ? ' <span class="badge badge-trial">trial</span>' : "") +
+          (l.expires_at ? (' -- expires ' + new Date(l.expires_at).toLocaleDateString() + (expired ? " (expired)" : "")) : " -- no expiry") +
+          (l.amount != null ? (" -- " + l.currency + " " + Number(l.amount).toLocaleString()) : "") +
+          ' -- <button type="button" class="btnManageFromHistory" data-key="' + l.license_key + '" style="margin:2px 0 0;padding:3px 8px;font-size:10px;">Manage</button>' +
+          "</li>";
+      }).join("") || "<li>No licenses yet.</li>";
+      var eventsHtml = data.events.map(function(e){
+        return "<li>" + new Date(e.created_at).toLocaleString() + " -- " + e.event_type +
+          " -- " + e.product_name + " (" + e.license_key + ")" + (e.detail ? " -- " + e.detail : "") + "</li>";
+      }).join("") || "<li>No events recorded.</li>";
+      body.innerHTML =
+        "<p><strong>" + c.name + "</strong><br>" +
+        '<span class="muted">Customer ID (paste into "Existing customer ID" on the Issue License page to issue them another product): ' + c.id + "</span><br>" +
+        (c.email ? c.email + "<br>" : "") + (c.phone ? c.phone : "") + "</p>" +
+        "<h3>Licenses</h3><ul style='font-size:12px;padding-left:18px;'>" + licensesHtml + "</ul>" +
+        "<h3>Event timeline</h3><ul style='font-size:12px;padding-left:18px;'>" + eventsHtml + "</ul>" +
+        "<h3>Notes</h3>" +
+        '<textarea id="historyNotes" rows="3" placeholder="e.g. asked for a discount, prefers WhatsApp, called about renewal...">' +
+          (c.notes || "").replace(/</g, "&lt;") + "</textarea>" +
+        '<button id="btnSaveNotes" style="margin-top:8px;">Save Notes</button>' +
+        '<div class="result" id="notesResult"></div>';
+
+      document.getElementById("btnSaveNotes").addEventListener("click", function(){
+        var notesEl = document.getElementById("notesResult");
+        post("/api/admin/notes", { adminSecret: adminSecret(), customerId: customerId, notes: document.getElementById("historyNotes").value }).then(function(r){
+          showResult(notesEl, r.ok, r.ok ? "Notes saved." : "Failed: " + r.error);
+        });
+      });
+      Array.prototype.forEach.call(document.querySelectorAll(".btnManageFromHistory"), function(btn){
+        btn.addEventListener("click", function(){
+          closeHistory();
+          openManageLicense(this.getAttribute("data-key"));
+        });
+      });
+    });
+  }
+
+  // ---------- Login persistence ----------
+  // Admin password persistence: saved to this browser's localStorage so you
+  // don't retype it every visit. It sits in plaintext in this browser's
+  // storage on this device -- fine for your own machine, but click "Log
+  // out" before leaving the page open on a shared/public computer. For
+  // real per-person login instead of a shared password, put this page
+  // behind Cloudflare Access (free) -- see the deployment notes.
+  var LS_KEY = "licensingAdminSecret_v1";
+
+  function loadEverything(){
     loadProductsInto(document.getElementById("issueProduct"), false);
     loadProductsInto(document.getElementById("listProduct"), true);
+    loadDashboard();
+    refreshList();
+  }
+
+  document.getElementById("adminSecret").addEventListener("blur", function(){
+    if(!adminSecret()) return;
+    localStorage.setItem(LS_KEY, adminSecret());
+    document.getElementById("loginNote").textContent = "Password remembered on this device.";
+    loadEverything();
   });
+
+  document.getElementById("btnLogout").addEventListener("click", function(){
+    localStorage.removeItem(LS_KEY);
+    document.getElementById("adminSecret").value = "";
+    document.getElementById("loginNote").textContent = "Logged out on this device.";
+  });
+
+  (function(){
+    var saved = localStorage.getItem(LS_KEY);
+    if(saved){
+      document.getElementById("adminSecret").value = saved;
+      document.getElementById("loginNote").textContent = "Password remembered on this device.";
+      loadEverything();
+    }
+  })();
 </script>
 </body>
 </html>
