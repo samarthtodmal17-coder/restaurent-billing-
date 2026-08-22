@@ -4557,7 +4557,7 @@ var qrcode = function() {
      ============================================================ */
   var LICENSE_API_BASE = "https://licensing-platform.pages.dev"; // set to the real deployed licensing-platform URL
   var PRODUCT_ID = "restaurant-pos";
-  var APP_VERSION = "0.1.6";
+  var APP_VERSION = "0.1.7";
   var DB_VERSION = "1";
   var LICENSED_TO = "";
 
@@ -4713,9 +4713,23 @@ var qrcode = function() {
   // invoke() pipeline itself independent of any database code.
   debugLog("=== APP STARTED === __TAURI__ present: " + !!window.__TAURI__);
 
+  // getDb() used to cache only the RESOLVED handle (_dbHandle), set at the
+  // very end of the promise chain below. That left a race: if getDb() got
+  // called a second time before the first call's Database.load() had
+  // finished, _dbHandle was still null, so the second caller ALSO ran
+  // backup_database_file + Database.load() independently -- opening a
+  // second connection to the same restaurant.db file. This is exactly
+  // what the console log showed: two "getDb() called" lines back to back
+  // at startup (one from the initial loadData(), one from a saveData()
+  // triggered while creating the default first order), followed by
+  // "database is locked" the moment both connections tried to write.
+  // Fix: cache the in-flight PROMISE itself, not just its eventual
+  // result, so every concurrent caller awaits the exact same single
+  // Database.load() call instead of racing to start their own.
+  var _dbPromise = null;
   function getDb(){
     debugLog("getDb() called. __TAURI__ present: " + !!window.__TAURI__ + ", __TAURI__.core present: " + !!(window.__TAURI__ && window.__TAURI__.core) + ", __TAURI__.sql present: " + !!(window.__TAURI__ && window.__TAURI__.sql));
-    if(_dbHandle) return Promise.resolve(_dbHandle);
+    if(_dbPromise) return _dbPromise;
     var backup = (window.__TAURI__ && window.__TAURI__.core)
       ? window.__TAURI__.core.invoke("backup_database_file").then(function(r){
           debugLog("backup_database_file result: " + r);
@@ -4724,7 +4738,7 @@ var qrcode = function() {
           console.error("pre-migration backup failed (continuing anyway)", e);
         })
       : Promise.resolve();
-    return backup.then(function(){
+    _dbPromise = backup.then(function(){
       debugLog("about to call Database.load(" + DB_URL + ")");
       // ROOT CAUSE (found via DevTools console, finally enabled in
       // v0.1.5): window.__TAURI__.sql is NOT a namespace with a .Database
@@ -4762,7 +4776,15 @@ var qrcode = function() {
         debugLog("PRAGMA database_list FAILED: " + JSON.stringify(e));
       });
       return db;
+    }).catch(function(err){
+      // If loading genuinely fails, don't leave a broken promise cached
+      // forever -- clear it so a later retry (e.g. after the user fixes
+      // whatever's wrong) can actually try again instead of replaying the
+      // same failure indefinitely.
+      _dbPromise = null;
+      throw err;
     });
+    return _dbPromise;
   }
 
   // ---- row <-> JS object helpers, shared by open_orders/order_items and bills/bill_items ----
