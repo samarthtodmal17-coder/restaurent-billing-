@@ -4557,7 +4557,7 @@ var qrcode = function() {
      ============================================================ */
   var LICENSE_API_BASE = "https://licensing-platform.pages.dev"; // set to the real deployed licensing-platform URL
   var PRODUCT_ID = "restaurant-pos";
-  var APP_VERSION = "0.1.5";
+  var APP_VERSION = "0.1.6";
   var DB_VERSION = "1";
   var LICENSED_TO = "";
 
@@ -4701,10 +4701,7 @@ var qrcode = function() {
           // is worth surfacing loudly since this diagnostic itself has
           // silently failed twice before (v0.1.1's alert() never
           // appeared, v0.1.2's Desktop file never appeared).
-          if(!_debugLogFailed){
-            _debugLogFailed = true;
-            try{ alert("Debug log write failed:\n\n" + JSON.stringify(e)); }catch(e2){}
-          }
+          _debugLogFailed = true;
         });
       } else {
         debugTitle("NO INVOKE FOUND -- " + text);
@@ -4729,7 +4726,19 @@ var qrcode = function() {
       : Promise.resolve();
     return backup.then(function(){
       debugLog("about to call Database.load(" + DB_URL + ")");
-      return window.__TAURI__.sql.Database.load(DB_URL);
+      // ROOT CAUSE (found via DevTools console, finally enabled in
+      // v0.1.5): window.__TAURI__.sql is NOT a namespace with a .Database
+      // property -- the plugin-sql Database class itself is exposed
+      // directly as window.__TAURI__.sql, with .load()/.get() as static
+      // methods right on it (confirmed by logging the object: "class
+      // t{constructor... static async load(s){...}"). The extra
+      // ".Database" in the old code meant this line has thrown
+      // "Cannot read properties of undefined (reading 'load')" on every
+      // single call since the very first build -- every write silently
+      // failed and got swallowed by doSave()'s .catch(), so the app only
+      // ever ran off the in-memory `data` object and nothing was ever
+      // persisted to disk. This is the actual fix for the data-loss bug.
+      return window.__TAURI__.sql.load(DB_URL);
     }).then(function(db){
       _dbHandle = db;
       debugLog("Database.load() resolved successfully.");
@@ -4748,7 +4757,6 @@ var qrcode = function() {
         console.log("SQLite database_list:", info);
         window.__lastDbDiagnostic = info;
         debugLog("PRAGMA database_list -> " + info);
-        try{ alert("Database diagnostic (first launch this session):\n\n" + info); }catch(e){}
       }).catch(function(e){
         console.error("PRAGMA database_list failed", e);
         debugLog("PRAGMA database_list FAILED: " + JSON.stringify(e));
