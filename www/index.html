@@ -4557,7 +4557,7 @@ var qrcode = function() {
      ============================================================ */
   var LICENSE_API_BASE = "https://licensing-platform.pages.dev"; // set to the real deployed licensing-platform URL
   var PRODUCT_ID = "restaurant-pos";
-  var APP_VERSION = "0.1.3";
+  var APP_VERSION = "0.1.4";
   var DB_VERSION = "1";
   var LICENSED_TO = "";
 
@@ -4657,19 +4657,44 @@ var qrcode = function() {
   var DB_URL = "sqlite:restaurant.db";
   var _dbHandle = null;
 
-  // TEMPORARY DIAGNOSTIC: writes to %USERPROFILE%\Desktop\billing_debug.txt
-  // via the Rust-side write_debug_log command (see src-tauri/src/main.rs),
-  // which deliberately avoids Tauri's own app_data_dir() resolution so it
-  // still works even if THAT resolution is the actual bug. Used instead of
-  // (in addition to) alert(), since a previous diagnostic build's alert()
-  // never visibly appeared for the user testing this -- either it's being
-  // silently swallowed by this webview, or the code isn't reaching that
-  // point, and this should tell us which. Safe no-op outside Tauri.
+  // TEMPORARY DIAGNOSTIC (v0.1.4): three previous diagnostic builds in a
+  // row (v0.1.1, v0.1.2, v0.1.3) produced zero visible signal -- no
+  // alert() ever appeared, no debug file ever appeared in any of 4
+  // candidate folders, even though the correct new version was confirmed
+  // installed each time. The common thread in all of them is that they
+  // depend on window.__TAURI__.core.invoke() actually being the right
+  // way to call a Rust command in this build -- if that specific object
+  // path is wrong (API surface differs by @tauri-apps/api version) every
+  // one of those diagnostics silently no-ops. So this build adds a
+  // zero-dependency fallback that needs no Tauri API at all: writing
+  // status directly into the window title bar via plain document.title,
+  // which is guaranteed to work in any web view. Look at the app's
+  // title bar (and taskbar button) after launching -- it will show the
+  // live diagnostic state with no popup required.
+  function debugTitle(text){
+    try{ document.title = "Restaurant Billing - DEBUG: " + text; }catch(e){}
+    console.log("[debug]", text);
+  }
+
+  // Try every known location invoke() might live at, across different
+  // @tauri-apps/api versions/configurations, instead of assuming
+  // window.__TAURI__.core.invoke is correct.
+  function findInvoke(){
+    var t = window.__TAURI__;
+    if(!t) return null;
+    if(t.core && typeof t.core.invoke === "function") return t.core.invoke;
+    if(typeof t.invoke === "function") return t.invoke;
+    if(t.tauri && typeof t.tauri.invoke === "function") return t.tauri.invoke;
+    return null;
+  }
+
   var _debugLogFailed = false;
   function debugLog(text){
+    debugTitle(text);
     try{
-      if(window.__TAURI__ && window.__TAURI__.core){
-        window.__TAURI__.core.invoke("write_debug_log", {text: text}).catch(function(e){
+      var inv = findInvoke();
+      if(inv){
+        inv("write_debug_log", {text: text}).catch(function(e){
           console.error("write_debug_log failed", e);
           // Only pop this once per launch -- if the very first attempt
           // fails, every path candidate on the Rust side failed, which
@@ -4681,6 +4706,8 @@ var qrcode = function() {
             try{ alert("Debug log write failed:\n\n" + JSON.stringify(e)); }catch(e2){}
           }
         });
+      } else {
+        debugTitle("NO INVOKE FOUND -- " + text);
       }
     }catch(e){ console.error("debugLog threw", e); }
     console.log("[debug]", text);
