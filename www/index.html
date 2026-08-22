@@ -4557,7 +4557,7 @@ var qrcode = function() {
      ============================================================ */
   var LICENSE_API_BASE = "https://licensing-platform.pages.dev"; // set to the real deployed licensing-platform URL
   var PRODUCT_ID = "restaurant-pos";
-  var APP_VERSION = "0.1.7";
+  var APP_VERSION = "0.1.8";
   var DB_VERSION = "1";
   var LICENSED_TO = "";
 
@@ -4673,7 +4673,6 @@ var qrcode = function() {
   // live diagnostic state with no popup required.
   function debugTitle(text){
     try{ document.title = "Restaurant Billing - DEBUG: " + text; }catch(e){}
-    console.log("[debug]", text);
   }
 
   // Try every known location invoke() might live at, across different
@@ -4756,25 +4755,17 @@ var qrcode = function() {
     }).then(function(db){
       _dbHandle = db;
       debugLog("Database.load() resolved successfully.");
-      // DIAGNOSTIC (temporary): ask SQLite itself where the open database
-      // file actually lives on disk, and surface it once per launch. This
-      // is here specifically to track down a data-loss report -- data
-      // typed into the app during a session was not surviving an app
-      // restart, and no restaurant.db file could be found anywhere on the
-      // machine via a full disk search. This will show us the exact real
-      // path (or reveal that no file-backed path exists at all, e.g. if
-      // for any reason an in-memory database were opened instead) without
-      // needing devtools, which release builds don't expose. Remove once
-      // the root cause is confirmed fixed.
-      db.select("PRAGMA database_list").then(function(rows){
-        var info = (rows || []).map(function(r){ return r.name + ": " + r.file; }).join(" | ");
-        console.log("SQLite database_list:", info);
-        window.__lastDbDiagnostic = info;
-        debugLog("PRAGMA database_list -> " + info);
-      }).catch(function(e){
-        console.error("PRAGMA database_list failed", e);
-        debugLog("PRAGMA database_list FAILED: " + JSON.stringify(e));
-      });
+      // The PRAGMA database_list diagnostic that used to run here has
+      // been removed. It was a fire-and-forget query on the same shared
+      // `db` connection, not chained into (awaited by) this promise --
+      // meaning it could still be mid-flight on the connection at the
+      // exact moment the app's own first real write (e.g. the
+      // auto-created default order during startup) tried to BEGIN a
+      // transaction on that same connection, causing the "database is
+      // locked" error seen in testing. We already got what we needed
+      // from it (confirmed the real file path), so it's gone rather than
+      // fixed in place, to remove this as a source of connection
+      // contention entirely.
       return db;
     }).catch(function(err){
       // If loading genuinely fails, don't leave a broken promise cached
