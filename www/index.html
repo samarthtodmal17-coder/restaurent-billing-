@@ -4557,7 +4557,7 @@ var qrcode = function() {
      ============================================================ */
   var LICENSE_API_BASE = "https://licensing-platform.pages.dev"; // set to the real deployed licensing-platform URL
   var PRODUCT_ID = "restaurant-pos";
-  var APP_VERSION = "0.1.1";
+  var APP_VERSION = "0.1.2";
   var DB_VERSION = "1";
   var LICENSED_TO = "";
 
@@ -4657,17 +4657,42 @@ var qrcode = function() {
   var DB_URL = "sqlite:restaurant.db";
   var _dbHandle = null;
 
+  // TEMPORARY DIAGNOSTIC: writes to %USERPROFILE%\Desktop\billing_debug.txt
+  // via the Rust-side write_debug_log command (see src-tauri/src/main.rs),
+  // which deliberately avoids Tauri's own app_data_dir() resolution so it
+  // still works even if THAT resolution is the actual bug. Used instead of
+  // (in addition to) alert(), since a previous diagnostic build's alert()
+  // never visibly appeared for the user testing this -- either it's being
+  // silently swallowed by this webview, or the code isn't reaching that
+  // point, and this should tell us which. Safe no-op outside Tauri.
+  function debugLog(text){
+    try{
+      if(window.__TAURI__ && window.__TAURI__.core){
+        window.__TAURI__.core.invoke("write_debug_log", {text: text}).catch(function(e){
+          console.error("write_debug_log failed", e);
+        });
+      }
+    }catch(e){ console.error("debugLog threw", e); }
+    console.log("[debug]", text);
+  }
+
   function getDb(){
+    debugLog("getDb() called. __TAURI__ present: " + !!window.__TAURI__ + ", __TAURI__.core present: " + !!(window.__TAURI__ && window.__TAURI__.core) + ", __TAURI__.sql present: " + !!(window.__TAURI__ && window.__TAURI__.sql));
     if(_dbHandle) return Promise.resolve(_dbHandle);
     var backup = (window.__TAURI__ && window.__TAURI__.core)
-      ? window.__TAURI__.core.invoke("backup_database_file").catch(function(e){
+      ? window.__TAURI__.core.invoke("backup_database_file").then(function(r){
+          debugLog("backup_database_file result: " + r);
+        }).catch(function(e){
+          debugLog("pre-migration backup FAILED (continuing anyway): " + JSON.stringify(e));
           console.error("pre-migration backup failed (continuing anyway)", e);
         })
       : Promise.resolve();
     return backup.then(function(){
+      debugLog("about to call Database.load(" + DB_URL + ")");
       return window.__TAURI__.sql.Database.load(DB_URL);
     }).then(function(db){
       _dbHandle = db;
+      debugLog("Database.load() resolved successfully.");
       // DIAGNOSTIC (temporary): ask SQLite itself where the open database
       // file actually lives on disk, and surface it once per launch. This
       // is here specifically to track down a data-loss report -- data
@@ -4679,12 +4704,14 @@ var qrcode = function() {
       // needing devtools, which release builds don't expose. Remove once
       // the root cause is confirmed fixed.
       db.select("PRAGMA database_list").then(function(rows){
-        var info = (rows || []).map(function(r){ return r.name + ": " + r.file; }).join("\n");
+        var info = (rows || []).map(function(r){ return r.name + ": " + r.file; }).join(" | ");
         console.log("SQLite database_list:", info);
         window.__lastDbDiagnostic = info;
+        debugLog("PRAGMA database_list -> " + info);
         try{ alert("Database diagnostic (first launch this session):\n\n" + info); }catch(e){}
       }).catch(function(e){
         console.error("PRAGMA database_list failed", e);
+        debugLog("PRAGMA database_list FAILED: " + JSON.stringify(e));
       });
       return db;
     });
@@ -4867,8 +4894,20 @@ var qrcode = function() {
   var _saveChain = Promise.resolve();
   function saveData(){
     itemCodeIndexCache = null;
-    _saveChain = _saveChain.then(function(){ return doSave(); }).catch(function(err){
+    _saveChain = _saveChain.then(function(){ return doSave(); }).then(function(){
+      debugLog("doSave() completed OK");
+    }).catch(function(err){
+      // NOTE: this catch swallows the error and lets _saveChain continue
+      // as a resolved promise -- meaning every SUBSEQUENT saveData() call
+      // proceeds normally even if a previous write silently failed. If
+      // doSave() has been failing every time (e.g. a bad column, a closed
+      // connection, a permissions error), the in-memory `data` object
+      // still updates and the UI looks correct, but nothing ever reaches
+      // disk -- exactly the reported symptom of data vanishing on
+      // restart. debugLog here so a release-build user's failures are
+      // finally visible somewhere.
       console.error("SQLite save failed", err);
+      debugLog("doSave() FAILED: " + JSON.stringify(err) + " / " + (err && err.message));
     });
     return _saveChain;
   }
@@ -10185,7 +10224,9 @@ var qrcode = function() {
   if(!isLicensed()){
     document.getElementById("lockScreen").classList.add("show");
   }
+  debugLog("INIT block reached. isLicensed(): " + isLicensed());
   dataReadyPromise.then(function(loadedData){
+    debugLog("dataReadyPromise RESOLVED. bills: " + ((loadedData && loadedData.bills) ? loadedData.bills.length : "n/a") + ", openOrders: " + ((loadedData && loadedData.openOrders) ? loadedData.openOrders.length : "n/a"));
     data = loadedData;
     if(isLicensed()){
       startApp();
@@ -10200,6 +10241,7 @@ var qrcode = function() {
     // anywhere a release build's user could see. Surface it loudly so a
     // storage failure is never mistaken for "the app just isn't loading".
     console.error("Failed to load data on startup", err);
+    debugLog("dataReadyPromise REJECTED: " + JSON.stringify(err) + " / " + (err && err.message));
     try{
       alert("Could not load the local database on startup:\n\n" + (err && err.message ? err.message : err) +
         "\n\nYour existing data has NOT been touched. Please note this exact message and contact support.");

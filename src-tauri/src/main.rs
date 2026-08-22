@@ -138,6 +138,40 @@ fn restore_database_backup(app: tauri::AppHandle, filename: String) -> Result<St
     Ok("Backup restored. Please restart the app for it to take effect.".into())
 }
 
+/// TEMPORARY DIAGNOSTIC: appends a timestamped line to a plain text file
+/// on the user's Desktop, deliberately NOT using app.path().app_data_dir()
+/// -- the whole point is to have one write path that does not depend on
+/// the same Tauri path-resolution logic used by tauri-plugin-sql and the
+/// backup/restore commands above, in case THAT resolution is itself the
+/// root cause of a data-loss report (data added during a session vanishes
+/// on restart, with no restaurant.db found anywhere on disk via a full
+/// search, and no alert() popup from the JS-side diagnostic ever
+/// appearing -- suggesting either alert() is being silently swallowed by
+/// this webview, or the code never reaches that point at all). Reading
+/// USERPROFILE directly from the OS environment is about as low-level and
+/// dependency-free as a Windows path lookup gets. Remove once the root
+/// cause is confirmed and fixed.
+#[tauri::command]
+fn write_debug_log(text: String) -> Result<String, String> {
+    let profile = std::env::var("USERPROFILE").map_err(|e| format!("no USERPROFILE env var: {e}"))?;
+    let path = std::path::Path::new(&profile).join("Desktop").join("billing_debug.txt");
+
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
+    use std::io::Write;
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .map_err(|e| format!("could not open {}: {e}", path.display()))?;
+    writeln!(file, "[{stamp}] {text}").map_err(|e| e.to_string())?;
+
+    Ok(path.to_string_lossy().to_string())
+}
+
 /// Real OS-level device identifier for license activation (replaces the
 /// old browser-localStorage random UUID the PWA version used, which any
 /// "clear site data" click would wipe -- see README-PHASE1.md). On
@@ -171,7 +205,8 @@ fn main() {
             backup_database_file,
             list_database_backups,
             restore_database_backup,
-            get_device_fingerprint
+            get_device_fingerprint,
+            write_debug_log
         ])
         .run(tauri::generate_context!())
         .expect("error while running restaurant billing app");
