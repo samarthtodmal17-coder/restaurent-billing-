@@ -4557,7 +4557,7 @@ var qrcode = function() {
      ============================================================ */
   var LICENSE_API_BASE = "https://licensing-platform.pages.dev"; // set to the real deployed licensing-platform URL
   var PRODUCT_ID = "restaurant-pos";
-  var APP_VERSION = "0.1.9";
+  var APP_VERSION = "0.1.10";
   var DB_VERSION = "1";
   var LICENSED_TO = "";
 
@@ -4755,31 +4755,16 @@ var qrcode = function() {
     }).then(function(db){
       _dbHandle = db;
       debugLog("Database.load() resolved successfully.");
-      // tauri-plugin-sql opens SQLite through a connection pool rather
-      // than one dedicated connection, and consecutive rapid saves
-      // (several UI actions each calling saveData() in one burst, e.g.
-      // finishing a bill also triggers discardOrder() and
-      // createNewOrder(), each of which saves again) were hitting
-      // "database is locked" and even "cannot start a transaction within
-      // a transaction" -- confirmed live via DevTools. WAL mode lets
-      // SQLite serve concurrent access without exclusive-locking the
-      // whole file for every write, and busy_timeout makes SQLite retry
-      // internally for a few seconds instead of failing immediately the
-      // moment it sees any contention at all. Both are standard, safe
-      // settings for exactly this situation. Combined with the retry
-      // wrapper in saveData() below (for the rare case contention
-      // outlasts the timeout), this should make saves reliable under the
-      // app's actual real-world call pattern rather than only under the
-      // idealized one-save-at-a-time case the original code assumed.
-      return db.execute("PRAGMA journal_mode=WAL").then(function(){
-        return db.execute("PRAGMA busy_timeout=5000");
-      }).then(function(){
-        debugLog("WAL mode + busy_timeout configured.");
-        return db;
-      }).catch(function(e){
-        debugLog("PRAGMA setup FAILED (continuing anyway): " + JSON.stringify(e));
-        return db;
-      });
+      // v0.1.9 added PRAGMA journal_mode=WAL / busy_timeout here, hoping
+      // to reduce lock contention. It made things strictly worse -- EVERY
+      // save started failing immediately with "cannot start a
+      // transaction within a transaction", including the very first save
+      // of a session, before any overlapping saveData() calls could even
+      // happen. That points to the WAL-mode switch itself leaving this
+      // connection in a bad transactional state, not fixing one. Reverted
+      // -- back to SQLite's default rollback-journal mode. The retry
+      // logic in saveData() (which was NOT the problem) stays.
+      return db;
     }).catch(function(err){
       // If loading genuinely fails, don't leave a broken promise cached
       // forever -- clear it so a later retry (e.g. after the user fixes
@@ -5015,21 +5000,34 @@ var qrcode = function() {
   }
 
   function doSave(){
+    // IMPORTANT: no BEGIN/COMMIT/ROLLBACK here. tauri-plugin-sql's
+    // db.execute() acquires a connection from an internal sqlx pool
+    // FRESH on every single call (confirmed by reading the plugin's own
+    // Rust source: DbPool::execute does `pool.execute(query).await`, not
+    // a persistent connection) -- so "BEGIN" and the statements after it
+    // are NOT guaranteed to land on the same physical SQLite connection.
+    // That was the real cause of the "database is locked" and "cannot
+    // start a transaction within a transaction" errors seen in testing
+    // (menu items sometimes saved, bills often didn't -- pure luck of
+    // which pooled connection each call happened to get). Each statement
+    // below now auto-commits individually, which is reliable with this
+    // plugin's architecture. Trade-off: a mid-save crash could leave
+    // some tables updated and others not, instead of an all-or-nothing
+    // transaction -- an acceptable cost given the alternative was saves
+    // failing outright on every bill.
     return getDb().then(function(db){
-      return db.execute("BEGIN").then(function(){
-        var biz = data.business;
-        return db.execute(
-          "UPDATE business_settings SET name=$1, logo=$2, address=$3, phone=$4, footer=$5, currency=$6, " +
-          "tax_label=$7, tax_percent=$8, service_charge_percent=$9, bill_prefix=$10, receipt_paper_width=$11, " +
-          "receipt_paper_width_custom=$12, kot_paper_width=$13, kot_paper_width_custom=$14, packing_charge_type=$15, " +
-          "packing_charge_value=$16, rawbt_auto_print=$17, daily_seq=$18, last_bill_date_key=$19, upi_id=$20, show_upi_qr=$21 " +
-          "WHERE id=1",
-          [biz.name, biz.logo, biz.address, biz.phone, biz.footer, biz.currency, biz.taxLabel, biz.taxPercent,
-           biz.serviceChargePercent, biz.billPrefix, biz.receiptPaperWidth, biz.receiptPaperWidthCustom,
-           biz.kotPaperWidth, biz.kotPaperWidthCustom, biz.packingChargeType, biz.packingChargeValue,
-           biz.rawBtAutoPrint ? 1 : 0, biz.dailySeq, biz.lastBillDateKey, biz.upiId, biz.showUpiQr ? 1 : 0]
-        );
-      })
+      var biz = data.business;
+      return db.execute(
+        "UPDATE business_settings SET name=$1, logo=$2, address=$3, phone=$4, footer=$5, currency=$6, " +
+        "tax_label=$7, tax_percent=$8, service_charge_percent=$9, bill_prefix=$10, receipt_paper_width=$11, " +
+        "receipt_paper_width_custom=$12, kot_paper_width=$13, kot_paper_width_custom=$14, packing_charge_type=$15, " +
+        "packing_charge_value=$16, rawbt_auto_print=$17, daily_seq=$18, last_bill_date_key=$19, upi_id=$20, show_upi_qr=$21 " +
+        "WHERE id=1",
+        [biz.name, biz.logo, biz.address, biz.phone, biz.footer, biz.currency, biz.taxLabel, biz.taxPercent,
+         biz.serviceChargePercent, biz.billPrefix, biz.receiptPaperWidth, biz.receiptPaperWidthCustom,
+         biz.kotPaperWidth, biz.kotPaperWidthCustom, biz.packingChargeType, biz.packingChargeValue,
+         biz.rawBtAutoPrint ? 1 : 0, biz.dailySeq, biz.lastBillDateKey, biz.upiId, biz.showUpiQr ? 1 : 0]
+      )
       .then(function(){ return db.execute("DELETE FROM categories"); })
       .then(function(){ return runSequential(data.categories, function(c, i){
         return db.execute("INSERT INTO categories (id, name, sort_order) VALUES ($1,$2,$3)", [c.id, c.name, i]);
@@ -5124,10 +5122,6 @@ var qrcode = function() {
       }); })
       .then(function(){
         return db.execute("UPDATE counters SET value=$1 WHERE key='next_item_code'", [data.nextItemCode || 101]);
-      })
-      .then(function(){ return db.execute("COMMIT"); })
-      .catch(function(err){
-        return db.execute("ROLLBACK").catch(function(){}).then(function(){ throw err; });
       });
     });
   }
