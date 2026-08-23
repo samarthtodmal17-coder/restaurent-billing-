@@ -4557,7 +4557,7 @@ var qrcode = function() {
      ============================================================ */
   var LICENSE_API_BASE = "https://licensing-platform.pages.dev"; // set to the real deployed licensing-platform URL
   var PRODUCT_ID = "restaurant-pos";
-  var APP_VERSION = "0.1.8";
+  var APP_VERSION = "0.1.9";
   var DB_VERSION = "1";
   var LICENSED_TO = "";
 
@@ -4755,18 +4755,31 @@ var qrcode = function() {
     }).then(function(db){
       _dbHandle = db;
       debugLog("Database.load() resolved successfully.");
-      // The PRAGMA database_list diagnostic that used to run here has
-      // been removed. It was a fire-and-forget query on the same shared
-      // `db` connection, not chained into (awaited by) this promise --
-      // meaning it could still be mid-flight on the connection at the
-      // exact moment the app's own first real write (e.g. the
-      // auto-created default order during startup) tried to BEGIN a
-      // transaction on that same connection, causing the "database is
-      // locked" error seen in testing. We already got what we needed
-      // from it (confirmed the real file path), so it's gone rather than
-      // fixed in place, to remove this as a source of connection
-      // contention entirely.
-      return db;
+      // tauri-plugin-sql opens SQLite through a connection pool rather
+      // than one dedicated connection, and consecutive rapid saves
+      // (several UI actions each calling saveData() in one burst, e.g.
+      // finishing a bill also triggers discardOrder() and
+      // createNewOrder(), each of which saves again) were hitting
+      // "database is locked" and even "cannot start a transaction within
+      // a transaction" -- confirmed live via DevTools. WAL mode lets
+      // SQLite serve concurrent access without exclusive-locking the
+      // whole file for every write, and busy_timeout makes SQLite retry
+      // internally for a few seconds instead of failing immediately the
+      // moment it sees any contention at all. Both are standard, safe
+      // settings for exactly this situation. Combined with the retry
+      // wrapper in saveData() below (for the rare case contention
+      // outlasts the timeout), this should make saves reliable under the
+      // app's actual real-world call pattern rather than only under the
+      // idealized one-save-at-a-time case the original code assumed.
+      return db.execute("PRAGMA journal_mode=WAL").then(function(){
+        return db.execute("PRAGMA busy_timeout=5000");
+      }).then(function(){
+        debugLog("WAL mode + busy_timeout configured.");
+        return db;
+      }).catch(function(e){
+        debugLog("PRAGMA setup FAILED (continuing anyway): " + JSON.stringify(e));
+        return db;
+      });
     }).catch(function(err){
       // If loading genuinely fails, don't leave a broken promise cached
       // forever -- clear it so a later retry (e.g. after the user fixes
@@ -4952,10 +4965,38 @@ var qrcode = function() {
   // If this ever becomes a measurable perf issue at a very high-volume
   // site, the next step is targeted incremental writes per mutation --
   // not a reason to avoid shipping this first, correct version now.
+  function sleep(ms){ return new Promise(function(resolve){ setTimeout(resolve, ms); }); }
+
+  // A handful of writes per session were still hitting transient SQLite
+  // contention errors ("database is locked", "cannot start a transaction
+  // within a transaction") even with WAL mode + busy_timeout, because
+  // several UI actions each call saveData() within one burst (e.g.
+  // finishing a bill also triggers discardOrder(), which triggers
+  // createNewOrder(), each saving again). These are retried automatically
+  // -- this is the normal, expected way SQLite applications handle
+  // transient lock contention, not a workaround for a specific one-off
+  // bug. Anything that isn't one of these two known-transient error
+  // messages is NOT retried, so a real, persistent problem (bad SQL, a
+  // missing column, a genuine permissions error) still fails fast and
+  // logs immediately rather than being silently retried into oblivion.
+  function isTransientDbError(err){
+    var msg = (err && err.message) ? err.message : (typeof err === "string" ? err : JSON.stringify(err || ""));
+    return /database is locked/i.test(msg) || /transaction within a transaction/i.test(msg);
+  }
+  function doSaveWithRetry(attemptsLeft){
+    return doSave().catch(function(err){
+      if(attemptsLeft > 0 && isTransientDbError(err)){
+        debugLog("doSave() hit a transient error, retrying (" + attemptsLeft + " attempts left): " + (err && err.message));
+        return sleep(150).then(function(){ return doSaveWithRetry(attemptsLeft - 1); });
+      }
+      throw err;
+    });
+  }
+
   var _saveChain = Promise.resolve();
   function saveData(){
     itemCodeIndexCache = null;
-    _saveChain = _saveChain.then(function(){ return doSave(); }).then(function(){
+    _saveChain = _saveChain.then(function(){ return doSaveWithRetry(4); }).then(function(){
       debugLog("doSave() completed OK");
     }).catch(function(err){
       // NOTE: this catch swallows the error and lets _saveChain continue
