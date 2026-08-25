@@ -6,3 +6,8 @@ src-tauri/target/
 .DS_Store
 Thumbs.db
 *.log
+
+# Business/reference deliverables kept in the workspace folder for
+# convenience, not meant to live in source control.
+licensing-platform/Manokshmi-Business-Technical-Reference.pdf
+licensing-platform/manokshmi-software-source.zip

@@ -1,6 +1,6 @@
 [package]
 name = "restaurant-billing"
-version = "0.1.10"
+version = "0.1.11"
 description = "Restaurant billing POS - Tauri desktop shell (Phase 1: SQLite storage)"
 edition = "2021"
 
@@ -8,17 +8,12 @@ edition = "2021"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-# "devtools" feature: normally Tauri only exposes the browser DevTools
-# (right-click Inspect / F12) in debug builds; release builds -- which is
-# what the GitHub Actions installer produces -- have it compiled out
-# entirely. Enabling it here turns DevTools on in the shipped installer
-# too, purely to get real visibility into a data-persistence bug that
-# four separate blind diagnostics (popup alerts, a Desktop text file, a
-# multi-path fallback file, a window-title write) all failed to surface
-# any signal from. Once the bug is found and fixed, remove this feature
-# again -- shipping DevTools in a release build is a deliberate,
-# temporary trade-off, not the normal state for this app.
-tauri = { version = "2", features = ["devtools"] }
+# DevTools were temporarily enabled in release builds (via the "devtools"
+# feature) to diagnose a data-persistence bug that several blind
+# diagnostics failed to surface any signal from. That bug is now found,
+# fixed, and confirmed working (v0.1.10) -- so DevTools access is removed
+# again here, back to the normal, safer default of debug-builds-only.
+tauri = { version = "2" }
 tauri-plugin-sql = { version = "2", features = ["sqlite"] }
 tauri-plugin-fs = "2"
 serde = { version = "1", features = ["derive"] }
@@ -37,6 +32,12 @@ machine-uid = "0.6"
 # see README-PHASE1.md for the full one-time setup.
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
+# Cloud backup (Phase 7): invoke() can only carry JSON, not raw bytes, so
+# the local SQLite file is base64-encoded before being pushed to the
+# licensing platform's R2-backed /api/backup/upload endpoint, and decoded
+# back to bytes when pulled down via /api/backup/restore. See
+# read_database_bytes / save_cloud_backup_bytes in src/main.rs.
+base64 = "0.22"
 
 # No [lib] / [[bin]] section needed: this is a plain binary crate with a
 # single src/main.rs, which Cargo picks up automatically. (An earlier draft
