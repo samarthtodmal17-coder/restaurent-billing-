@@ -15,7 +15,6 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use serde::Serialize;
 use tauri::Manager;
 use tauri_plugin_sql::{Migration, MigrationKind};
@@ -218,58 +217,6 @@ fn get_device_fingerprint() -> Result<String, String> {
     machine_uid::get().map_err(|e| format!("could not read machine id: {e}"))
 }
 
-/// Cloud backup (Phase 7), read side: reads the LIVE restaurant.db file
-/// (not a .bak- snapshot) and returns it as a base64 string, so the JS
-/// side can POST it to the licensing platform's /api/backup/upload
-/// endpoint (R2-backed, scoped to this device's active license -- see
-/// licensing-platform/functions/api/backup/upload.js). invoke() can only
-/// carry JSON, not raw bytes, hence base64 as the bridge.
-#[tauri::command]
-fn read_database_bytes(app: tauri::AppHandle) -> Result<String, String> {
-    let dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("could not resolve app data dir: {e}"))?;
-    let db_path = dir.join("restaurant.db");
-    if !db_path.exists() {
-        return Err("No local database found yet -- nothing to back up.".into());
-    }
-    let bytes = std::fs::read(&db_path).map_err(|e| e.to_string())?;
-    Ok(BASE64.encode(bytes))
-}
-
-/// Cloud backup (Phase 7), write side: takes a base64 database pulled down
-/// from /api/backup/restore and writes it to disk using the SAME
-/// restaurant.db.bak-<unix-seconds> naming convention as the existing
-/// local backups made by backup_database_file. That means it shows up
-/// automatically in list_database_backups and can be applied with the
-/// already-tested restore_database_backup command below -- no separate,
-/// duplicate "restore from cloud" logic needed on the Rust side. Returns
-/// the filename so the JS side can immediately call
-/// restore_database_backup with it.
-#[tauri::command]
-fn save_cloud_backup_bytes(app: tauri::AppHandle, data: String) -> Result<String, String> {
-    let dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("could not resolve app data dir: {e}"))?;
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-
-    let bytes = BASE64
-        .decode(data)
-        .map_err(|e| format!("corrupted cloud backup data: {e}"))?;
-
-    let stamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_err(|e| e.to_string())?
-        .as_secs();
-    let filename = format!("restaurant.db.bak-{stamp}");
-    let path = dir.join(&filename);
-    std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
-
-    Ok(filename)
-}
-
 fn main() {
     tauri::Builder::default()
         .plugin(
@@ -290,9 +237,7 @@ fn main() {
             list_database_backups,
             restore_database_backup,
             get_device_fingerprint,
-            write_debug_log,
-            read_database_bytes,
-            save_cloud_backup_bytes
+            write_debug_log
         ])
         .run(tauri::generate_context!())
         .expect("error while running restaurant billing app");

@@ -1,6 +1,6 @@
 [package]
 name = "restaurant-billing"
-version = "0.1.11"
+version = "0.1.12"
 description = "Restaurant billing POS - Tauri desktop shell (Phase 1: SQLite storage)"
 edition = "2021"
 
@@ -32,12 +32,6 @@ machine-uid = "0.6"
 # see README-PHASE1.md for the full one-time setup.
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
-# Cloud backup (Phase 7): invoke() can only carry JSON, not raw bytes, so
-# the local SQLite file is base64-encoded before being pushed to the
-# licensing platform's R2-backed /api/backup/upload endpoint, and decoded
-# back to bytes when pulled down via /api/backup/restore. See
-# read_database_bytes / save_cloud_backup_bytes in src/main.rs.
-base64 = "0.22"
 
 # No [lib] / [[bin]] section needed: this is a plain binary crate with a
 # single src/main.rs, which Cargo picks up automatically. (An earlier draft

@@ -2200,16 +2200,6 @@
       </div>
       <div id="backupsList" style="margin-top:10px;"></div>
     </div>
-
-    <div class="card settings-full" id="cloudBackupCard" style="display:none;">
-      <h2>Cloud Backup</h2>
-      <p class="muted">Local backups protect against a bad update, but they still live on this same computer -- if this PC's disk fails or it's lost, local backups are lost with it. Cloud backup sends an extra copy of your database to secure off-site storage, so your data survives even that. It also happens quietly on its own every few days when this PC is online.</p>
-      <p class="muted" id="cloudBackupStatus" style="margin-top:6px;">No cloud backup yet.</p>
-      <div class="row" style="margin-top:10px;">
-        <button class="btn secondary" id="btnCloudBackupNow">Back Up to Cloud Now</button>
-        <button class="btn secondary" id="btnCloudRestore">Restore from Cloud</button>
-      </div>
-    </div>
   </section>
 
 </main>
@@ -4567,7 +4557,7 @@ var qrcode = function() {
      ============================================================ */
   var LICENSE_API_BASE = "https://licensing-platform.pages.dev"; // set to the real deployed licensing-platform URL
   var PRODUCT_ID = "restaurant-pos";
-  var APP_VERSION = "0.1.11";
+  var APP_VERSION = "0.1.12";
   var DB_VERSION = "1";
   var LICENSED_TO = "";
 
@@ -10160,9 +10150,6 @@ var qrcode = function() {
       var backupsCard = document.getElementById("desktopBackupsCard");
       if(backupsCard) backupsCard.style.display = "";
       renderBackupsList();
-      var cloudBackupCard = document.getElementById("cloudBackupCard");
-      if(cloudBackupCard) cloudBackupCard.style.display = "";
-      renderCloudBackupStatus();
     }
     // Bill History defaults to Today (not All Dates) -- checking on
     // today's bills is the most common reason to open this screen, so it
@@ -10236,7 +10223,6 @@ var qrcode = function() {
         dataReadyPromise.then(function(loadedData){
           data = loadedData;
           startApp();
-          maybeCloudBackup();
           setTimeout(maybeCheckForUpdate, 5000);
         });
       } else {
@@ -10303,115 +10289,6 @@ var qrcode = function() {
   var btnRefreshBackups = document.getElementById("btnRefreshBackups");
   if(btnRefreshBackups) btnRefreshBackups.addEventListener("click", renderBackupsList);
 
-  /* ================= CLOUD BACKUP (Phase 7) =================
-     Local backups (above) live on the same disk as the live database --
-     no protection if that disk dies. This pushes an extra copy to the
-     licensing platform's R2 bucket via /api/backup/upload, scoped to
-     this device's active license (see licensing-platform/functions/api/
-     backup/upload.js and restore.js). Restore re-uses the existing,
-     already-tested local restore_database_backup command: the pulled-down
-     bytes are written to disk as a normal restaurant.db.bak-<stamp> file
-     (see save_cloud_backup_bytes in src-tauri/src/main.rs), then restored
-     exactly like any other local backup -- no separate restore code path
-     to trust here, just the read/write bridge. */
-  var CLOUD_BACKUP_INTERVAL_DAYS = 7; // more frequent than the 14-day license recheck, since losing data is costlier than a delayed lock-out
-  var CLOUD_BACKUP_LAST_KEY = "billingAppLastCloudBackup_v1";
-
-  function getLastCloudBackupAt(){
-    try{ return localStorage.getItem(CLOUD_BACKUP_LAST_KEY); }catch(e){ return null; }
-  }
-  function setLastCloudBackupAt(iso){
-    try{ localStorage.setItem(CLOUD_BACKUP_LAST_KEY, iso); }catch(e){}
-  }
-
-  function renderCloudBackupStatus(){
-    var el = document.getElementById("cloudBackupStatus");
-    if(!el) return;
-    var last = getLastCloudBackupAt();
-    el.textContent = last ? ("Last cloud backup: " + new Date(last).toLocaleString()) : "No cloud backup yet.";
-  }
-
-  function callBackupUploadApi(licenseKey, deviceId, backupData){
-    return fetch(LICENSE_API_BASE + "/api/backup/upload", {
-      method: "POST",
-      headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({licenseKey: licenseKey, productId: PRODUCT_ID, deviceId: deviceId, backupData: backupData})
-    }).then(function(res){ return res.json(); });
-  }
-
-  function callBackupRestoreApi(licenseKey, deviceId){
-    return fetch(LICENSE_API_BASE + "/api/backup/restore", {
-      method: "POST",
-      headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({licenseKey: licenseKey, productId: PRODUCT_ID, deviceId: deviceId})
-    }).then(function(res){ return res.json(); });
-  }
-
-  // silent=true is used by the quiet automatic backup so it never pops a
-  // toast or interrupts anyone mid-bill; the manual "Back Up to Cloud Now"
-  // button always passes silent=false.
-  function doCloudBackupNow(silent){
-    var rec = getStoredLicense();
-    if(!rec || !rec.licenseKey || !rec.deviceId){
-      if(!silent) showToast("No active license found -- cannot back up.");
-      return Promise.resolve();
-    }
-    return window.__TAURI__.core.invoke("read_database_bytes").then(function(b64){
-      return callBackupUploadApi(rec.licenseKey, rec.deviceId, b64);
-    }).then(function(result){
-      if(result && result.ok){
-        setLastCloudBackupAt(result.backedUpAt || new Date().toISOString());
-        renderCloudBackupStatus();
-        if(!silent) showToast("Backed up to the cloud.");
-      } else if(!silent){
-        showToast("Cloud backup failed: " + (result && result.error ? result.error : "unknown error"));
-      }
-    }).catch(function(err){
-      if(!silent) showToast("Cloud backup failed: " + (err && err.message ? err.message : err));
-    });
-  }
-
-  function doCloudRestore(){
-    var rec = getStoredLicense();
-    if(!rec || !rec.licenseKey || !rec.deviceId){
-      showToast("No active license found -- cannot restore.");
-      return;
-    }
-    if(!confirm("Restore your most recent CLOUD backup? Today's data on this device will be replaced, and the app will need to be restarted afterward.")) return;
-    callBackupRestoreApi(rec.licenseKey, rec.deviceId).then(function(result){
-      if(!result || !result.ok){
-        showToast("Cloud restore failed: " + (result && result.error ? result.error : "no cloud backup found"));
-        return;
-      }
-      return window.__TAURI__.core.invoke("save_cloud_backup_bytes", {data: result.backupData}).then(function(filename){
-        return window.__TAURI__.core.invoke("restore_database_backup", {filename: filename});
-      }).then(function(msg){
-        showToast(msg);
-        renderBackupsList();
-      });
-    }).catch(function(err){
-      showToast("Cloud restore failed: " + (err && err.message ? err.message : err));
-    });
-  }
-
-  var btnCloudBackupNow = document.getElementById("btnCloudBackupNow");
-  if(btnCloudBackupNow) btnCloudBackupNow.addEventListener("click", function(){ doCloudBackupNow(false); });
-  var btnCloudRestore = document.getElementById("btnCloudRestore");
-  if(btnCloudRestore) btnCloudRestore.addEventListener("click", doCloudRestore);
-
-  // Quiet automatic cloud backup -- same shape as maybeRecheckLicense:
-  // only when online, only at most once every CLOUD_BACKUP_INTERVAL_DAYS,
-  // and any failure (offline, server hiccup) is swallowed silently so it
-  // never interrupts normal billing. Tried again next launch either way.
-  function maybeCloudBackup(){
-    if(!(window.__TAURI__ && window.__TAURI__.core)) return;
-    if(!navigator.onLine) return;
-    var last = getLastCloudBackupAt();
-    var daysSince = last ? (Date.now() - new Date(last).getTime()) / 86400000 : Infinity;
-    if(daysSince < CLOUD_BACKUP_INTERVAL_DAYS) return;
-    doCloudBackupNow(true);
-  }
-
   /* ================= AUTOMATIC UPDATES (Phase 6) =================
      Uses the tauri-plugin-updater config in tauri.conf.json (pubkey +
      endpoints) -- window.__TAURI__.updater is only present when running
@@ -10450,7 +10327,6 @@ var qrcode = function() {
     if(isLicensed()){
       startApp();
       maybeRecheckLicense();
-      maybeCloudBackup();
       setTimeout(maybeCheckForUpdate, 5000);
     }
   }).catch(function(err){
