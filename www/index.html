@@ -228,30 +228,26 @@
   }
   .acc-chevron.collapsed{transform:rotate(-90deg);}
 
-  /* ---- Local Backups (Desktop) list: capped height + its own scroll,
-     instead of dumping every backup as a flat, ever-growing list straight
-     into the page (which used to make Settings look like it trailed off
-     into an endless wall of timestamps). Rust-side pruning also caps the
-     real count at 30; this is just the display-side safety net. ---- */
-  .backups-list-box{
-    margin-top:10px;
-    max-height:260px;
-    overflow-y:auto;
-    border:1px solid var(--border, #e2e2e2);
-    border-radius:8px;
-  }
-  .backups-list-box .backup-row{
+  /* ---- Weekly backup export reminder banner (see #backupReminderBanner
+     in the body) -- sits above the active screen regardless of which tab
+     is open, since the export it's nagging about matters no matter what
+     screen the owner happens to be on. ---- */
+  .backup-reminder-banner{
     display:flex;
+    flex-wrap:wrap;
     align-items:center;
     justify-content:space-between;
     gap:10px;
-    padding:8px 12px;
-    border-bottom:1px solid var(--border, #eee);
-    font-size:12.5px;
+    background:var(--accent-gold, #caa14a);
+    color:#231c0f;
+    font-size:13px;
+    font-weight:600;
+    padding:9px 16px;
+    margin:0 16px 10px;
+    border-radius:8px;
   }
-  .backups-list-box .backup-row:last-child{ border-bottom:none; }
-  .backups-list-box .backup-row:nth-child(even){ background:rgba(0,0,0,0.02); }
-  .backups-list-box .backup-meta{ color:var(--muted); }
+  .backup-reminder-actions{ display:flex; gap:8px; flex:0 0 auto; }
+  .backup-reminder-banner .btn{ padding:6px 12px; font-size:12.5px; }
   label{
     display:block;
     font-size:12px;
@@ -1692,6 +1688,21 @@
   <button class="tab-btn" data-tab="settings">Settings</button>
 </nav>
 
+<!-- Shown above whichever screen is active (not tied to any one tab) when
+     it's been a week or more since the last JSON backup export -- see
+     maybeShowBackupReminder() near the export handler. This is the export
+     that survives the device itself being lost/damaged, so it's the one
+     genuinely worth nagging about; it doesn't auto-dismiss on its own,
+     only via "Export Now" or "Remind Me Tomorrow", so it can't be missed
+     the way a fading toast could. -->
+<div id="backupReminderBanner" class="backup-reminder-banner" style="display:none;">
+  <span id="backupReminderText">📦 It's been a while since your last backup export.</span>
+  <span class="backup-reminder-actions">
+    <button type="button" class="btn small" id="btnBackupReminderExportNow">Export Now</button>
+    <button type="button" class="btn small secondary" id="btnBackupReminderDismiss">Remind Me Tomorrow</button>
+  </span>
+</div>
+
 <main>
 
   <!-- BILLING SCREEN -->
@@ -2195,69 +2206,20 @@
       </label>
     </div>
 
-    <!-- ---- The two cards below are mostly reference/instructional text
-         (RawBT setup steps, per-device printing guidance) rather than
-         compact fields -- kept full-width so they don't get squeezed into
-         a half-width column next to a much shorter card, which used to
-         make this screen look lopsided (a tall wall of text beside a
-         near-empty column). ---- -->
-    <div class="card settings-full">
-      <h2>⚡ Auto-Print (Skip the Print Picker) — Android</h2>
-      <p class="muted">Normally every "Print" tap opens your device's print screen and asks you to pick a printer, every single time -- no webpage/app can silently choose a printer for you, that's an Android/OS rule, not something this app controls. <strong>RawBT</strong> is a free print-service app that works around this: once it's set up, it can accept the ticket directly and print it without showing that picker.</p>
-      <label class="checkbox-row" for="rawBtAutoPrint" style="margin-top:8px;">
-        <input type="checkbox" id="rawBtAutoPrint">
-        <span>Use RawBT to print directly on this device (skip the picker)</span>
-      </label>
-      <p class="muted" style="margin-top:8px;">One-time setup per device:<br>
-      1. Install <strong>RawBT</strong> from the Play Store.<br>
-      2. Open RawBT, pair/select this device's printer inside the app, and do a test print from RawBT itself to confirm it works.<br>
-      3. Turn the checkbox above ON. Tap "Save All Settings" at the bottom of this page.<br>
-      4. From now on, Print / KOT on <em>this device</em> sends straight to that printer -- no picker.</p>
-      <p class="muted" style="margin-top:8px;"><strong>For a separate counter printer + kitchen printer that both auto-print with no picker:</strong> use two devices, one at each station (e.g. a phone/tablet at the counter, another in the kitchen). Set up RawBT on each device pointed at that station's own printer, and turn this toggle on for both. The counter device's Print button already uses the Receipt paper-width profile above, and the kitchen device's KOT button already uses the Kitchen paper-width profile -- so each device just needs its own RawBT connected to its own printer. One single device genuinely cannot silently auto-route between two different physical printers -- that's a hardware/OS limit, not this app.</p>
-      <p class="muted" style="margin-top:6px;">If this is off, or if RawBT isn't detected as working, Print/KOT falls back to the normal print picker automatically -- nothing breaks.</p>
-    </div>
-
-    <div class="card settings-full">
-      <h2>🖨️ How to Print (from a Tablet)</h2>
-      <p class="muted">Tapping "Print / Save PDF" on a receipt opens your tablet's normal print screen -- the printer itself has to be set up on the tablet first, one time only:</p>
-      <p style="margin-top:8px;"><strong>Android tablet:</strong></p>
-      <p class="muted">1. Pair your printer over Bluetooth (or connect it to the same WiFi, if it's a network printer).<br>
-      2. Most cheap thermal printers need a small "print service" app to work with Android -- <strong>RawBT</strong> (free on the Play Store) works with almost any Bluetooth thermal printer. If your printer has its own official app, that works too.<br>
-      3. Turn it on: Android Settings → Connected devices → Printing → enable RawBT (or your printer's service).<br>
-      4. Tap "Print / Save PDF" here, pick your printer from the list, and print. (Or turn on Auto-Print above to skip this step every time.)</p>
-      <p style="margin-top:8px;"><strong>iPad:</strong></p>
-      <p class="muted">iPads print directly (no app needed) only if the printer is <strong>AirPrint</strong>-certified and on the same WiFi. Most cheap thermal receipt printers are NOT AirPrint printers -- if yours isn't, use the "Share Photo" or "Download Photo" button next to Print instead, and send that receipt image into your printer's own app.</p>
-      <p style="margin-top:8px;"><strong>Desktop / laptop (Windows or Mac):</strong></p>
-      <p class="muted">A browser on a computer has the exact same rule -- it always opens the print dialog and asks which printer to use, it can't silently pick one either. The closest equivalent to Auto-Print on desktop is a one-time <strong>Chrome shortcut with the <code>--kiosk-printing</code> flag</strong>, which skips the dialog and prints straight to whichever printer is set as that computer's default:<br>
-      1. Right-click your Chrome shortcut → Properties → in "Target", add a space then <code>--kiosk-printing</code> at the end.<br>
-      2. In Windows Settings → Printers, set the printer you want this computer to use as the <strong>default printer</strong>.<br>
-      3. Open the app through that shortcut -- Print will now go straight to that default printer with no dialog.<br>
-      For a counter PC + a separate kitchen PC, do this on both machines, each with its own printer set as its own default -- same one-printer-per-station idea as the two-device RawBT setup above, just for desktops instead of phones/tablets.</p>
-      <p class="muted" style="margin-top:8px;">Either way, set the Receipt/Kitchen Printer Width above (58/60/80mm) to match your actual paper roll first, so the receipt prints at the right size.</p>
-    </div>
-
     <div class="card settings-full">
       <button class="btn" id="btnSaveSettings" style="width:100%;">💾 Save All Settings</button>
     </div>
 
     <div class="card settings-full">
-      <h2>Data</h2>
-      <p class="muted">All data is stored locally in this browser on this device only. Export a backup regularly, especially before clearing browser data or switching devices.</p>
+      <h2>Data &amp; Backup</h2>
+      <p class="muted">Export a backup regularly to a pendrive or another device -- this is the only backup that survives this device itself being lost, stolen, or badly damaged, so it matters more than anything else on this page. Aim for at least once a week.</p>
+      <p class="muted" id="lastExportStatusText" style="margin-top:2px;"></p>
       <div class="row">
         <button class="btn secondary" id="btnExportData">Export Backup (JSON)</button>
         <button class="btn secondary" id="btnImportData">Import Backup</button>
       </div>
       <input type="file" id="importFile" accept=".json" style="display:none;">
       <button class="btn danger" id="btnResetData" style="margin-top:10px;">Erase All Data</button>
-    </div>
-
-    <div class="card settings-full" id="desktopBackupsCard" style="display:none;">
-      <h2>Local Backups (Desktop)</h2>
-      <p class="muted">A safety copy of the full database is made automatically each time the app starts. Only the most recent 30 are kept -- older ones are cleaned up automatically so this list doesn't grow forever. Restoring replaces today's data with an older backup -- use this only to recover from a real problem, and note it needs an app restart to take effect.</p>
-      <div class="row">
-        <button class="btn secondary" id="btnRefreshBackups">Refresh List</button>
-      </div>
-      <div id="backupsList" class="backups-list-box"></div>
     </div>
   </section>
 
@@ -4616,7 +4578,7 @@ var qrcode = function() {
      ============================================================ */
   var LICENSE_API_BASE = "https://licensing-platform.pages.dev"; // set to the real deployed licensing-platform URL
   var PRODUCT_ID = "restaurant-pos";
-  var APP_VERSION = "0.1.15";
+  var APP_VERSION = "0.1.17";
   var DB_VERSION = "1";
   var LICENSED_TO = "";
 
@@ -4733,32 +4695,26 @@ var qrcode = function() {
     console.log("[debug]", text);
   }
 
-  // getDb() used to cache only the RESOLVED handle (_dbHandle), set at the
-  // very end of the promise chain below. That left a race: if getDb() got
-  // called a second time before the first call's Database.load() had
-  // finished, _dbHandle was still null, so the second caller ALSO ran
-  // backup_database_file + Database.load() independently -- opening a
-  // second connection to the same restaurant.db file. This is exactly
-  // what the console log showed: two "getDb() called" lines back to back
-  // at startup (one from the initial loadData(), one from a saveData()
-  // triggered while creating the default first order), followed by
-  // "database is locked" the moment both connections tried to write.
-  // Fix: cache the in-flight PROMISE itself, not just its eventual
-  // result, so every concurrent caller awaits the exact same single
-  // Database.load() call instead of racing to start their own.
+  // getDb() caches the in-flight PROMISE itself, not just its eventual
+  // result -- so every concurrent caller awaits the exact same single
+  // Database.load() call instead of racing to start their own (an earlier
+  // version cached only the resolved handle, which let two callers both
+  // open their own connection to restaurant.db before the first one
+  // finished loading, causing "database is locked" errors).
+  //
+  // This used to also invoke backup_database_file first, snapshotting the
+  // whole database to disk before every single Database.load() call (i.e.
+  // every app launch) as a local safety net. That local-backup system was
+  // removed in v0.1.17 in favor of a single, more reliable line of
+  // defense: reminding the owner to export a JSON backup to a pendrive
+  // weekly (see maybeShowBackupReminder() near the export button) --
+  // simpler, and the JSON export is the one copy that actually survives
+  // this device itself failing, which an on-disk snapshot never could.
   var _dbPromise = null;
   function getDb(){
     debugLog("getDb() called. __TAURI__ present: " + !!window.__TAURI__ + ", __TAURI__.core present: " + !!(window.__TAURI__ && window.__TAURI__.core) + ", __TAURI__.sql present: " + !!(window.__TAURI__ && window.__TAURI__.sql));
     if(_dbPromise) return _dbPromise;
-    var backup = (window.__TAURI__ && window.__TAURI__.core)
-      ? window.__TAURI__.core.invoke("backup_database_file").then(function(r){
-          debugLog("backup_database_file result: " + r);
-        }).catch(function(e){
-          debugLog("pre-migration backup FAILED (continuing anyway): " + JSON.stringify(e));
-          console.error("pre-migration backup failed (continuing anyway)", e);
-        })
-      : Promise.resolve();
-    _dbPromise = backup.then(function(){
+    _dbPromise = Promise.resolve().then(function(){
       debugLog("about to call Database.load(" + DB_URL + ")");
       // ROOT CAUSE (found via DevTools console, finally enabled in
       // v0.1.5): window.__TAURI__.sql is NOT a namespace with a .Database
@@ -5325,18 +5281,17 @@ var qrcode = function() {
     "cardDashWeekday": true,
     // Settings: the compact "fill this in" cards default open (Business
     // Details, Billing Configuration, Printer Setup, UPI Payment QR --
-    // cards 0/1/2/3 in that order); the two long reference/help cards
-    // (Auto-Print setup steps, How to Print) default collapsed since
-    // they're mostly instructional text, not something looked at every
-    // visit. These keys are positional (screen id + child index) because
-    // those cards have no element id of their own -- if the Settings
-    // screen's card order ever changes, these four indexes need updating
-    // to match.
+    // cards 0/1/2/3 in that order), as does Data & Backup (card 5; card 4
+    // is the header-less Save button card, which the accordion system
+    // skips entirely since it has no <h2>). These keys are positional
+    // (screen id + child index) because those cards have no element id of
+    // their own -- if the Settings screen's card order ever changes,
+    // these five indexes need updating to match.
     "screen-settings-card-0": true,  // Business Details
     "screen-settings-card-1": true,  // Billing Configuration
     "screen-settings-card-2": true,  // Printer Setup
     "screen-settings-card-3": true,  // UPI Payment QR
-    "screen-settings-card-7": true   // Data (export/import/erase)
+    "screen-settings-card-5": true   // Data & Backup
   };
 
   function saveCollapsedCardsState(){
@@ -5486,7 +5441,6 @@ var qrcode = function() {
     document.getElementById("receiptPaperWidthCustom").value = b.receiptPaperWidthCustom || 58;
     document.getElementById("kotPaperWidth").value = b.kotPaperWidth || "58";
     document.getElementById("kotPaperWidthCustom").value = b.kotPaperWidthCustom || 58;
-    document.getElementById("rawBtAutoPrint").checked = !!b.rawBtAutoPrint;
     document.getElementById("receiptPaperWidthCustomWrap").style.display = (b.receiptPaperWidth === "custom") ? "block" : "none";
     document.getElementById("kotPaperWidthCustomWrap").style.display = (b.kotPaperWidth === "custom") ? "block" : "none";
     document.getElementById("upiId").value = b.upiId || "";
@@ -5549,7 +5503,6 @@ var qrcode = function() {
     data.business.receiptPaperWidthCustom = parseFloat(document.getElementById("receiptPaperWidthCustom").value) || 58;
     data.business.kotPaperWidth = document.getElementById("kotPaperWidth").value || "58";
     data.business.kotPaperWidthCustom = parseFloat(document.getElementById("kotPaperWidthCustom").value) || 58;
-    data.business.rawBtAutoPrint = document.getElementById("rawBtAutoPrint").checked;
     data.business.upiId = document.getElementById("upiId").value.trim();
     data.business.showUpiQr = document.getElementById("showUpiQr").checked;
     saveData();
@@ -5559,15 +5512,7 @@ var qrcode = function() {
     showToast("Settings saved");
   });
 
-  document.getElementById("btnExportData").addEventListener("click", function(){
-    var blob = new Blob([JSON.stringify(data, null, 2)], {type: "application/json"});
-    var url = URL.createObjectURL(blob);
-    var a = document.createElement("a");
-    a.href = url;
-    a.download = "billing-backup-" + new Date().toISOString().slice(0,10) + ".json";
-    a.click();
-    URL.revokeObjectURL(url);
-  });
+  document.getElementById("btnExportData").addEventListener("click", exportBackupNow);
 
   document.getElementById("btnImportData").addEventListener("click", function(){
     document.getElementById("importFile").click();
@@ -9268,53 +9213,13 @@ var qrcode = function() {
     return lines.join("\n");
   }
 
-  // Plain-text version of a kitchen ticket, for RawBT auto-print and any
-  // other "just give me the text" use. Mirrors what showKOT() renders.
-  function buildKotText(order, ticketItems, isAddOn){
-    var lines = [];
-    lines.push("KITCHEN ORDER TICKET" + (isAddOn ? " - ADD-ON" : ""));
-    lines.push(new Date().toLocaleString());
-    lines.push("--------------------------------");
-    if(order.table) lines.push("Table/Room: " + order.table);
-    if(order.customer) lines.push("Customer: " + order.customer);
-    if(order.isParcel) lines.push("*** PARCEL / TAKEAWAY ***");
-    lines.push("--------------------------------");
-    ticketItems.forEach(function(item){
-      lines.push(item.name + "  x" + item.qty);
-    });
-    lines.push("--------------------------------");
-    return lines.join("\n");
-  }
-
-  // ---- RawBT direct-print (Android only) ----
-  // RawBT is a free third-party Android print service. Once it's installed
-  // and paired with a printer, it accepts print jobs through a custom
-  // "rawbt:" URL/intent instead of going through Android's normal print
-  // picker -- that's the one real way to skip the picker on Android. There
-  // is no equivalent trick on iOS/desktop; those always show the picker.
-  function isAndroidDevice(){
-    return /Android/i.test(navigator.userAgent || "");
-  }
-
-  function utf8ToBase64(str){
-    return btoa(unescape(encodeURIComponent(str)));
-  }
-
-  // Sends plain text to RawBT via its intent URL scheme. Returns true if it
-  // attempted the hand-off (doesn't guarantee RawBT actually printed --
-  // there's no callback for that), false if this device/setup can't use it.
-  function sendToRawBt(text){
-    if(!isAndroidDevice()) return false;
-    try{
-      var b64 = utf8ToBase64(text + "\n\n\n");
-      var intentUrl = "intent:base64," + b64 +
-        "#Intent;scheme=rawbt;package=ru.a402d.rawbtprinter;end;";
-      window.location.href = intentUrl;
-      return true;
-    }catch(e){
-      return false;
-    }
-  }
+  // RawBT direct-print (skip-the-Android-picker) was removed in v0.1.17 --
+  // it worked (isAndroidDevice/buildKotText/sendToRawBt used to live
+  // here), but it added a lot of setup-instruction text to Settings for a
+  // feature most customers weren't using, and RawBT setup guidance now
+  // lives in a standalone PDF instead. printReceiptNow() below always
+  // goes through the normal browser/OS print picker now, same as every
+  // non-Android device already did.
 
   function updateWhatsappShareLink(){
     var link = document.getElementById("btnShareWhatsapp");
@@ -9988,24 +9893,9 @@ var qrcode = function() {
   // which physical printer to send to -- that's a browser/OS limitation no
   // webpage can bypass -- so the document title is set to clearly say
   // which one this is ("KOT" vs the business/bill name), making it easy
-  // to pick the right physical printer every time. If the owner has turned
-  // on RawBT Auto-Print in Settings (Android only), skip the picker
-  // entirely and hand the ticket straight to RawBT instead.
+  // to pick the right physical printer every time.
   function printReceiptNow(kind){
     kind = kind || "receipt";
-    if(data.business.rawBtAutoPrint && isAndroidDevice()){
-      var text = null;
-      if(kind === "kot" && currentKotTicket){
-        text = buildKotText(currentKotTicket.order, currentKotTicket.ticketItems, currentKotTicket.isAddOn);
-      } else if(kind !== "kot" && currentReceiptBill){
-        text = buildReceiptText(currentReceiptBill);
-      }
-      if(text && sendToRawBt(text)){
-        showToast("Sent to RawBT for printing");
-        return;
-      }
-      // Fall through to the normal print picker if RawBT couldn't be reached.
-    }
     applyReceiptPrintStyle(kind);
     var originalTitle = document.title;
     if(kind === "kot"){
@@ -10200,11 +10090,8 @@ var qrcode = function() {
     updateCreditTabBadge();
     initCardAccordions();
     applyReceiptPrintStyle("receipt");
-    if(window.__TAURI__ && window.__TAURI__.core){
-      var backupsCard = document.getElementById("desktopBackupsCard");
-      if(backupsCard) backupsCard.style.display = "";
-      renderBackupsList();
-    }
+    updateLastExportStatusText();
+    maybeShowBackupReminder();
     // Bill History defaults to Today (not All Dates) -- checking on
     // today's bills is the most common reason to open this screen, so it
     // should need zero taps. Tapping "All Dates" (or any other preset)
@@ -10295,53 +10182,107 @@ var qrcode = function() {
     if(e.key === "Enter") document.getElementById("btnUnlock").click();
   });
 
-  /* ================= LOCAL BACKUPS (Desktop only) =================
-     Surfaces the restaurant.db.bak-<stamp> files created automatically by
-     backup_database_file (called before every migration, and again by
-     restore_database_backup itself before it overwrites anything) --
-     see src-tauri/src/main.rs. Only meaningful under the real Tauri
-     shell, so the whole card stays hidden in a plain browser tab. */
-  function formatBackupBytes(n){
-    if(n < 1024) return n + " B";
-    if(n < 1024*1024) return (n/1024).toFixed(1) + " KB";
-    return (n/(1024*1024)).toFixed(1) + " MB";
+  /* ================= WEEKLY BACKUP EXPORT REMINDER =================
+     v0.1.14-16 had an automatic on-disk "Local Backups" safety net
+     (snapshot restaurant.db before every launch, keep the last few,
+     offer Restore in Settings). It was removed in v0.1.17: it only ever
+     protected against the app/an update breaking something on THIS
+     device, and gave a false sense of security, since every one of those
+     snapshots sat on the exact same disk as the live database -- if the
+     device itself is lost, stolen, or its disk fails, the live database
+     and every local backup are gone together. The JSON export (button in
+     the Data & Backup card) is the only thing that actually survives
+     that, because it's meant to be saved somewhere physically separate
+     (a pendrive). This reminder exists because a manual step nobody is
+     ever nudged about tends not to happen reliably -- so instead of a
+     silent safety net, this is a loud, un-missable one that only goes
+     away once the owner has actually exported recently, or explicitly
+     asked to be reminded tomorrow instead. */
+  var LAST_EXPORT_STORAGE_KEY = "billingAppLastExportAt_v1";
+  var BACKUP_REMINDER_SNOOZE_KEY = "billingAppBackupReminderSnoozeUntil_v1";
+  var BACKUP_REMINDER_INTERVAL_DAYS = 7;
+  var MS_PER_DAY = 24 * 60 * 60 * 1000;
+
+  function getLastExportAt(){
+    try{
+      var raw = localStorage.getItem(LAST_EXPORT_STORAGE_KEY);
+      return raw ? parseInt(raw, 10) : null;
+    }catch(e){ return null; }
+  }
+  function setLastExportAt(ts){
+    try{ localStorage.setItem(LAST_EXPORT_STORAGE_KEY, String(ts)); }catch(e){}
+  }
+  function daysSince(ts){
+    return Math.floor((Date.now() - ts) / MS_PER_DAY);
   }
 
-  function renderBackupsList(){
-    var listEl = document.getElementById("backupsList");
-    if(!listEl) return;
-    window.__TAURI__.core.invoke("list_database_backups").then(function(backups){
-      if(!backups.length){
-        listEl.innerHTML = '<p class="muted">No backups yet -- the first one is made automatically the next time the app updates.</p>';
-        return;
-      }
-      var html = "";
-      backups.forEach(function(b){
-        var d = new Date(b.created_at_unix * 1000);
-        html += '<div class="backup-row">' +
-          '<span class="backup-meta">' + d.toLocaleString() + ' &middot; ' + formatBackupBytes(b.size_bytes) + '</span>' +
-          '<button class="btn small secondary" data-restore-backup="' + escapeHtml(b.filename) + '">Restore</button>' +
-          '</div>';
-      });
-      listEl.innerHTML = html;
-      listEl.querySelectorAll("[data-restore-backup]").forEach(function(btn){
-        btn.addEventListener("click", function(){
-          var filename = btn.getAttribute("data-restore-backup");
-          if(!confirm("Restore this backup? Today's data will be replaced with this older copy, and the app will need to be restarted afterward.")) return;
-          window.__TAURI__.core.invoke("restore_database_backup", {filename: filename}).then(function(msg){
-            showToast(msg);
-          }).catch(function(err){
-            showToast("Restore failed: " + err);
-          });
-        });
-      });
-    }).catch(function(err){
-      listEl.innerHTML = '<p class="muted">Could not load backups: ' + escapeHtml(String(err)) + '</p>';
-    });
+  // Actually performs the export (same JSON dump as before) and records
+  // when it happened, so both the Data card's status line and the
+  // reminder banner know to stop nagging. Shared by the normal Export
+  // button and the reminder banner's own "Export Now" shortcut.
+  function exportBackupNow(){
+    var blob = new Blob([JSON.stringify(data, null, 2)], {type: "application/json"});
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement("a");
+    a.href = url;
+    a.download = "billing-backup-" + new Date().toISOString().slice(0,10) + ".json";
+    a.click();
+    URL.revokeObjectURL(url);
+    setLastExportAt(Date.now());
+    updateLastExportStatusText();
+    hideBackupReminder();
   }
 
-  var btnRefreshBackups = document.getElementById("btnRefreshBackups");
-  if(btnRefreshBackups) btnRefreshBackups.addEventListener("click", renderBackupsList);
+  function updateLastExportStatusText(){
+    var el = document.getElementById("lastExportStatusText");
+    if(!el) return;
+    var lastAt = getLastExportAt();
+    if(!lastAt){
+      el.textContent = "No backup exported yet on this device.";
+      el.style.color = "var(--danger)";
+      return;
+    }
+    var days = daysSince(lastAt);
+    el.textContent = "Last exported: " + (days <= 0 ? "today" : days === 1 ? "1 day ago" : days + " days ago") + ".";
+    el.style.color = (days >= BACKUP_REMINDER_INTERVAL_DAYS) ? "var(--danger)" : "var(--muted)";
+  }
+
+  function hideBackupReminder(){
+    var banner = document.getElementById("backupReminderBanner");
+    if(banner) banner.style.display = "none";
+  }
+
+  // Called once at startup. Shows the banner if a week or more has passed
+  // since the last export (or none has ever happened) -- unless the owner
+  // already tapped "Remind Me Tomorrow" and that snooze hasn't expired
+  // yet. Deliberately not tied to the Settings screen specifically: the
+  // owner may go days without opening Settings, and the whole point is
+  // this can't be missed by simply avoiding that one tab.
+  function maybeShowBackupReminder(){
+    var banner = document.getElementById("backupReminderBanner");
+    if(!banner) return;
+    var snoozeUntil = 0;
+    try{ snoozeUntil = parseInt(localStorage.getItem(BACKUP_REMINDER_SNOOZE_KEY) || "0", 10); }catch(e){}
+    if(Date.now() < snoozeUntil) return;
+
+    var lastAt = getLastExportAt();
+    var overdue = !lastAt || daysSince(lastAt) >= BACKUP_REMINDER_INTERVAL_DAYS;
+    if(!overdue) return;
+
+    var textEl = document.getElementById("backupReminderText");
+    if(textEl){
+      textEl.textContent = lastAt
+        ? "📦 It's been " + daysSince(lastAt) + " days since your last backup export -- save a copy to a pendrive today."
+        : "📦 You haven't exported a backup yet on this device -- save a copy to a pendrive today.";
+    }
+    banner.style.display = "";
+  }
+
+  document.getElementById("btnBackupReminderExportNow").addEventListener("click", exportBackupNow);
+  document.getElementById("btnBackupReminderDismiss").addEventListener("click", function(){
+    try{ localStorage.setItem(BACKUP_REMINDER_SNOOZE_KEY, String(Date.now() + MS_PER_DAY)); }catch(e){}
+    hideBackupReminder();
+  });
 
   /* ================= AUTOMATIC UPDATES (Phase 6) =================
      Uses the tauri-plugin-updater config in tauri.conf.json (pubkey +
