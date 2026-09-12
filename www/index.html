@@ -1197,6 +1197,34 @@
       overflow:hidden;
     }
     #cardTables > .acc-body{ flex:1 1 auto; min-height:0; overflow-y:auto; }
+    /* ---- Collapsible Tables sidebar: the generic card-accordion click
+       on the "Tables" header already hides its body (.acc-collapsed), but
+       on this screen the sidebar sits in a fixed 220px grid column, so
+       collapsing the card used to leave a big empty 220px gap instead of
+       giving that width back to Add Items / Current Bill. When cardTables
+       specifically is collapsed, setCardCollapsed() (below) also adds
+       .tables-panel-collapsed to the screen, which narrows that grid
+       column down to just enough for the icon + expand arrow. ---- */
+    #screen-billing.screen.active.tables-panel-collapsed{
+      grid-template-columns:52px minmax(0,1fr) 340px;
+    }
+    #screen-billing.screen.active.tables-panel-collapsed #cardTables{
+      padding-left:6px;
+      padding-right:6px;
+      overflow:hidden;
+    }
+    #screen-billing.screen.active.tables-panel-collapsed #cardTables h2.acc-header{
+      flex-direction:column;
+      justify-content:flex-start;
+      gap:6px;
+    }
+    #screen-billing.screen.active.tables-panel-collapsed #cardTables .tables-label-text,
+    #screen-billing.screen.active.tables-panel-collapsed #cardTables .tables-running-badge{
+      display:none;
+    }
+    #screen-billing.screen.active.tables-panel-collapsed #cardTables .acc-chevron{
+      margin-left:0;
+    }
     #cardBillDetails{ grid-area:billdetails; overflow:hidden; padding:10px 14px; }
     #cardBillDetails h2{ font-size:12.5px; margin-bottom:0; }
     #cardBillDetails > .acc-body{ margin-top:8px; }
@@ -1661,7 +1689,7 @@
       </div>
     </div>
     <div class="card" id="cardTables">
-      <h2>🍽️ Tables<span id="tablesRunningCount" class="tables-running-badge"></span></h2>
+      <h2>🍽️ <span class="tables-label-text">Tables</span><span id="tablesRunningCount" class="tables-running-badge"></span></h2>
       <div id="tableMoveBanner" style="display:none;"></div>
       <div id="tablesGrid" class="tables-grid"></div>
 
@@ -4557,7 +4585,7 @@ var qrcode = function() {
      ============================================================ */
   var LICENSE_API_BASE = "https://licensing-platform.pages.dev"; // set to the real deployed licensing-platform URL
   var PRODUCT_ID = "restaurant-pos";
-  var APP_VERSION = "0.1.13";
+  var APP_VERSION = "0.1.14";
   var DB_VERSION = "1";
   var LICENSED_TO = "";
 
@@ -4657,60 +4685,22 @@ var qrcode = function() {
   var DB_URL = "sqlite:restaurant.db";
   var _dbHandle = null;
 
-  // TEMPORARY DIAGNOSTIC (v0.1.4): three previous diagnostic builds in a
-  // row (v0.1.1, v0.1.2, v0.1.3) produced zero visible signal -- no
-  // alert() ever appeared, no debug file ever appeared in any of 4
-  // candidate folders, even though the correct new version was confirmed
-  // installed each time. The common thread in all of them is that they
-  // depend on window.__TAURI__.core.invoke() actually being the right
-  // way to call a Rust command in this build -- if that specific object
-  // path is wrong (API surface differs by @tauri-apps/api version) every
-  // one of those diagnostics silently no-ops. So this build adds a
-  // zero-dependency fallback that needs no Tauri API at all: writing
-  // status directly into the window title bar via plain document.title,
-  // which is guaranteed to work in any web view. Look at the app's
-  // title bar (and taskbar button) after launching -- it will show the
-  // live diagnostic state with no popup required.
-  function debugTitle(text){
-    try{ document.title = "Restaurant Billing - DEBUG: " + text; }catch(e){}
-  }
-
-  // Try every known location invoke() might live at, across different
-  // @tauri-apps/api versions/configurations, instead of assuming
-  // window.__TAURI__.core.invoke is correct.
-  function findInvoke(){
-    var t = window.__TAURI__;
-    if(!t) return null;
-    if(t.core && typeof t.core.invoke === "function") return t.core.invoke;
-    if(typeof t.invoke === "function") return t.invoke;
-    if(t.tauri && typeof t.tauri.invoke === "function") return t.tauri.invoke;
-    return null;
-  }
-
-  var _debugLogFailed = false;
+  // Startup/save tracing, console-only. This used to also overwrite the
+  // window title bar with "DEBUG: ..." text and write a line to a
+  // billing_debug.txt file on disk via the write_debug_log Rust command,
+  // on every single app start AND every single bill save -- added while
+  // hunting the v0.1.1-v0.1.9 data-loss bug, which is long since found and
+  // fixed (root cause confirmed in v0.1.10: see the comment on the
+  // Database.load() call below). Left running past that, it was actively
+  // harmful: customers saw "DEBUG:" in their taskbar, and billing_debug.txt
+  // grew forever with no cleanup, for as long as the app was ever used.
+  // Removed in v0.1.14. console.log/console.error only reach anyone who
+  // has DevTools open (not available in release builds), so this is now
+  // inert in normal use and only useful if DevTools is re-enabled for a
+  // future investigation.
   function debugLog(text){
-    debugTitle(text);
-    try{
-      var inv = findInvoke();
-      if(inv){
-        inv("write_debug_log", {text: text}).catch(function(e){
-          console.error("write_debug_log failed", e);
-          // Only pop this once per launch -- if the very first attempt
-          // fails, every path candidate on the Rust side failed, which
-          // is worth surfacing loudly since this diagnostic itself has
-          // silently failed twice before (v0.1.1's alert() never
-          // appeared, v0.1.2's Desktop file never appeared).
-          _debugLogFailed = true;
-        });
-      } else {
-        debugTitle("NO INVOKE FOUND -- " + text);
-      }
-    }catch(e){ console.error("debugLog threw", e); }
     console.log("[debug]", text);
   }
-  // Fire one immediately, before anything else runs, to test the
-  // invoke() pipeline itself independent of any database code.
-  debugLog("=== APP STARTED === __TAURI__ present: " + !!window.__TAURI__);
 
   // getDb() used to cache only the RESOLVED handle (_dbHandle), set at the
   // very end of the promise chain below. That left a race: if getDb() got
@@ -5301,6 +5291,15 @@ var qrcode = function() {
   function setCardCollapsed(card, chevron, collapsed){
     card.classList.toggle("acc-collapsed", collapsed);
     chevron.classList.toggle("collapsed", collapsed);
+    // The Tables card doubles as the left sidebar on the Billing screen's
+    // fixed-width grid. Collapsing/expanding it there also needs to
+    // narrow/restore that grid column itself (see the
+    // .tables-panel-collapsed CSS), or the freed-up space just sits empty
+    // instead of going to Add Items / Current Bill.
+    if(card.id === "cardTables"){
+      var billingScreen = document.getElementById("screen-billing");
+      if(billingScreen) billingScreen.classList.toggle("tables-panel-collapsed", collapsed);
+    }
   }
 
   function initCardAccordions(){

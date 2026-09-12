@@ -138,71 +138,6 @@ fn restore_database_backup(app: tauri::AppHandle, filename: String) -> Result<St
     Ok("Backup restored. Please restart the app for it to take effect.".into())
 }
 
-/// TEMPORARY DIAGNOSTIC: appends a timestamped line to a plain text file
-/// on the user's Desktop, deliberately NOT using app.path().app_data_dir()
-/// -- the whole point is to have one write path that does not depend on
-/// the same Tauri path-resolution logic used by tauri-plugin-sql and the
-/// backup/restore commands above, in case THAT resolution is itself the
-/// root cause of a data-loss report (data added during a session vanishes
-/// on restart, with no restaurant.db found anywhere on disk via a full
-/// search, and no alert() popup from the JS-side diagnostic ever
-/// appearing -- suggesting either alert() is being silently swallowed by
-/// this webview, or the code never reaches that point at all). Reading
-/// USERPROFILE directly from the OS environment is about as low-level and
-/// dependency-free as a Windows path lookup gets. Remove once the root
-/// cause is confirmed and fixed.
-#[tauri::command]
-fn write_debug_log(text: String) -> Result<String, String> {
-    // v0.1.2 hardcoded USERPROFILE\Desktop and the file never appeared,
-    // even after a clean uninstall + reinstall. Most likely explanation:
-    // this machine has OneDrive "Known Folder Move" turned on, which
-    // relocates Desktop (and often Documents/Pictures) into
-    // USERPROFILE\OneDrive\Desktop and leaves nothing at the plain
-    // USERPROFILE\Desktop path -- so create(true) failed at the open()
-    // call because the PARENT folder itself doesn't exist there anymore
-    // (create(true) makes the file, not missing parent directories), and
-    // that error was being silently swallowed by the JS-side .catch().
-    // Try several locations in order and use whichever actually works,
-    // so this diagnostic no longer depends on guessing this machine's
-    // folder layout correctly.
-    let profile = std::env::var("USERPROFILE").unwrap_or_default();
-    let onedrive = std::env::var("OneDrive").unwrap_or_default();
-    let temp = std::env::var("TEMP").or_else(|_| std::env::var("TMP")).unwrap_or_default();
-
-    let mut candidates: Vec<std::path::PathBuf> = vec![];
-    if !onedrive.is_empty() {
-        candidates.push(std::path::Path::new(&onedrive).join("Desktop"));
-    }
-    if !profile.is_empty() {
-        candidates.push(std::path::Path::new(&profile).join("Desktop"));
-        candidates.push(std::path::Path::new(&profile).to_path_buf());
-    }
-    if !temp.is_empty() {
-        candidates.push(std::path::Path::new(&temp).to_path_buf());
-    }
-
-    let stamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-
-    use std::io::Write;
-    let mut attempts: Vec<String> = vec![];
-    for dir in &candidates {
-        let path = dir.join("billing_debug.txt");
-        match std::fs::OpenOptions::new().create(true).append(true).open(&path) {
-            Ok(mut file) => {
-                if writeln!(file, "[{stamp}] {text}").is_ok() {
-                    return Ok(path.to_string_lossy().to_string());
-                }
-                attempts.push(format!("{}: write failed", path.display()));
-            }
-            Err(e) => attempts.push(format!("{}: {e}", path.display())),
-        }
-    }
-    Err(format!("all candidate paths failed: {}", attempts.join(" | ")))
-}
-
 /// Real OS-level device identifier for license activation (replaces the
 /// old browser-localStorage random UUID the PWA version used, which any
 /// "clear site data" click would wipe -- see README-PHASE1.md). On
@@ -236,8 +171,7 @@ fn main() {
             backup_database_file,
             list_database_backups,
             restore_database_backup,
-            get_device_fingerprint,
-            write_debug_log
+            get_device_fingerprint
         ])
         .run(tauri::generate_context!())
         .expect("error while running restaurant billing app");
