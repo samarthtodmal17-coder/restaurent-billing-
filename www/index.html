@@ -227,6 +227,31 @@
     margin-left:8px;
   }
   .acc-chevron.collapsed{transform:rotate(-90deg);}
+
+  /* ---- Local Backups (Desktop) list: capped height + its own scroll,
+     instead of dumping every backup as a flat, ever-growing list straight
+     into the page (which used to make Settings look like it trailed off
+     into an endless wall of timestamps). Rust-side pruning also caps the
+     real count at 30; this is just the display-side safety net. ---- */
+  .backups-list-box{
+    margin-top:10px;
+    max-height:260px;
+    overflow-y:auto;
+    border:1px solid var(--border, #e2e2e2);
+    border-radius:8px;
+  }
+  .backups-list-box .backup-row{
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    gap:10px;
+    padding:8px 12px;
+    border-bottom:1px solid var(--border, #eee);
+    font-size:12.5px;
+  }
+  .backups-list-box .backup-row:last-child{ border-bottom:none; }
+  .backups-list-box .backup-row:nth-child(even){ background:rgba(0,0,0,0.02); }
+  .backups-list-box .backup-meta{ color:var(--muted); }
   label{
     display:block;
     font-size:12px;
@@ -2160,6 +2185,23 @@
     </div>
 
     <div class="card">
+      <h2>UPI Payment QR (Receipt)</h2>
+      <p class="muted">Add your UPI ID to print a scan-to-pay QR code on every receipt -- for cash counters that want a faster, contactless checkout option alongside cash/card/UPI apps.</p>
+      <label>UPI ID (VPA)</label>
+      <input type="text" id="upiId" placeholder="e.g. yourshop@okhdfcbank">
+      <label class="checkbox-row" for="showUpiQr" style="margin-top:10px;">
+        <input type="checkbox" id="showUpiQr">
+        <span>Show payment QR on printed/shared receipts</span>
+      </label>
+    </div>
+
+    <!-- ---- The two cards below are mostly reference/instructional text
+         (RawBT setup steps, per-device printing guidance) rather than
+         compact fields -- kept full-width so they don't get squeezed into
+         a half-width column next to a much shorter card, which used to
+         make this screen look lopsided (a tall wall of text beside a
+         near-empty column). ---- -->
+    <div class="card settings-full">
       <h2>⚡ Auto-Print (Skip the Print Picker) — Android</h2>
       <p class="muted">Normally every "Print" tap opens your device's print screen and asks you to pick a printer, every single time -- no webpage/app can silently choose a printer for you, that's an Android/OS rule, not something this app controls. <strong>RawBT</strong> is a free print-service app that works around this: once it's set up, it can accept the ticket directly and print it without showing that picker.</p>
       <label class="checkbox-row" for="rawBtAutoPrint" style="margin-top:8px;">
@@ -2175,7 +2217,7 @@
       <p class="muted" style="margin-top:6px;">If this is off, or if RawBT isn't detected as working, Print/KOT falls back to the normal print picker automatically -- nothing breaks.</p>
     </div>
 
-    <div class="card">
+    <div class="card settings-full">
       <h2>🖨️ How to Print (from a Tablet)</h2>
       <p class="muted">Tapping "Print / Save PDF" on a receipt opens your tablet's normal print screen -- the printer itself has to be set up on the tablet first, one time only:</p>
       <p style="margin-top:8px;"><strong>Android tablet:</strong></p>
@@ -2194,19 +2236,8 @@
       <p class="muted" style="margin-top:8px;">Either way, set the Receipt/Kitchen Printer Width above (58/60/80mm) to match your actual paper roll first, so the receipt prints at the right size.</p>
     </div>
 
-    <div class="card">
-      <h2>UPI Payment QR (Receipt)</h2>
-      <p class="muted">Add your UPI ID to print a scan-to-pay QR code on every receipt -- for cash counters that want a faster, contactless checkout option alongside cash/card/UPI apps.</p>
-      <label>UPI ID (VPA)</label>
-      <input type="text" id="upiId" placeholder="e.g. yourshop@okhdfcbank">
-      <label class="checkbox-row" for="showUpiQr" style="margin-top:10px;">
-        <input type="checkbox" id="showUpiQr">
-        <span>Show payment QR on printed/shared receipts</span>
-      </label>
-    </div>
-
     <div class="card settings-full">
-      <button class="btn" id="btnSaveSettings" style="width:100%;">💾 Save All Settings (Business Details, Billing, UPI)</button>
+      <button class="btn" id="btnSaveSettings" style="width:100%;">💾 Save All Settings</button>
     </div>
 
     <div class="card settings-full">
@@ -2222,11 +2253,11 @@
 
     <div class="card settings-full" id="desktopBackupsCard" style="display:none;">
       <h2>Local Backups (Desktop)</h2>
-      <p class="muted">A safety copy of the full database is made automatically before every update. Restoring replaces today's data with an older backup -- use this only to recover from a real problem, and note it needs an app restart to take effect.</p>
+      <p class="muted">A safety copy of the full database is made automatically each time the app starts. Only the most recent 30 are kept -- older ones are cleaned up automatically so this list doesn't grow forever. Restoring replaces today's data with an older backup -- use this only to recover from a real problem, and note it needs an app restart to take effect.</p>
       <div class="row">
         <button class="btn secondary" id="btnRefreshBackups">Refresh List</button>
       </div>
-      <div id="backupsList" style="margin-top:10px;"></div>
+      <div id="backupsList" class="backups-list-box"></div>
     </div>
   </section>
 
@@ -4585,7 +4616,7 @@ var qrcode = function() {
      ============================================================ */
   var LICENSE_API_BASE = "https://licensing-platform.pages.dev"; // set to the real deployed licensing-platform URL
   var PRODUCT_ID = "restaurant-pos";
-  var APP_VERSION = "0.1.14";
+  var APP_VERSION = "0.1.15";
   var DB_VERSION = "1";
   var LICENSED_TO = "";
 
@@ -5276,12 +5307,36 @@ var qrcode = function() {
     "screen-history-card-0": true,  // Bill History
     "screen-credit-card-0": true,   // Credit Payments summary
     "screen-credit-card-1": true,   // Customers with Dues
-    "cardDashRange": true,      // range controls
-    "cardDashOversight": true,  // Discounts & Rate Overrides (staff oversight)
-    "cardDashSummary": true,    // Summary
-    "screen-settings-card-0": true,
-    "screen-settings-card-1": true,
-    "screen-settings-card-3": true  // Data (export/import/erase)
+    // Dashboard: every report card defaults open. A dashboard that's
+    // mostly collapsed on first look doesn't read as "a dashboard" -- it
+    // reads as sparse/unfinished, with an uneven mix of tall (open) and
+    // short (collapsed) cards side by side in the 2-column grid. Owners
+    // can still collapse whichever reports they personally don't check
+    // often; that choice is remembered per device same as any other card.
+    "cardDashRange": true,
+    "cardDashOversight": true,
+    "cardDashSummary": true,
+    "cardDashPayment": true,
+    "cardDashTax": true,
+    "cardDashCategory": true,
+    "cardDashItemUnits": true,
+    "cardDashBestSellers": true,
+    "cardDashHours": true,
+    "cardDashWeekday": true,
+    // Settings: the compact "fill this in" cards default open (Business
+    // Details, Billing Configuration, Printer Setup, UPI Payment QR --
+    // cards 0/1/2/3 in that order); the two long reference/help cards
+    // (Auto-Print setup steps, How to Print) default collapsed since
+    // they're mostly instructional text, not something looked at every
+    // visit. These keys are positional (screen id + child index) because
+    // those cards have no element id of their own -- if the Settings
+    // screen's card order ever changes, these four indexes need updating
+    // to match.
+    "screen-settings-card-0": true,  // Business Details
+    "screen-settings-card-1": true,  // Billing Configuration
+    "screen-settings-card-2": true,  // Printer Setup
+    "screen-settings-card-3": true,  // UPI Payment QR
+    "screen-settings-card-7": true   // Data (export/import/erase)
   };
 
   function saveCollapsedCardsState(){
@@ -10263,8 +10318,8 @@ var qrcode = function() {
       var html = "";
       backups.forEach(function(b){
         var d = new Date(b.created_at_unix * 1000);
-        html += '<div class="row" style="align-items:center; justify-content:space-between; margin-top:6px;">' +
-          '<span>' + d.toLocaleString() + ' &middot; ' + formatBackupBytes(b.size_bytes) + '</span>' +
+        html += '<div class="backup-row">' +
+          '<span class="backup-meta">' + d.toLocaleString() + ' &middot; ' + formatBackupBytes(b.size_bytes) + '</span>' +
           '<button class="btn small secondary" data-restore-backup="' + escapeHtml(b.filename) + '">Restore</button>' +
           '</div>';
       });

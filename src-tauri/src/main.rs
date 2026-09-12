@@ -30,9 +30,53 @@ fn migrations() -> Vec<Migration> {
     // here. Do not edit version 1 once any customer has run it.
 }
 
+/// How many restaurant.db.bak-* snapshots to keep on disk. backup_database_file
+/// runs on every app launch (see its own doc comment below), so with no cap
+/// this list -- and the disk space it uses -- grows forever for as long as
+/// the app is ever used, which for a one-time-purchase product with no
+/// planned end date is exactly the kind of "fine for the first year, a
+/// slow-motion problem by year five" issue worth avoiding up front. 30 keeps
+/// roughly a month of daily-launch history (more if the app is opened less
+/// than once a day) while still capping worst-case growth at
+/// 30 x database-size, not unbounded.
+const MAX_KEPT_BACKUPS: usize = 30;
+
+#[derive(Serialize)]
+struct BackupInfo {
+    filename: String,
+    created_at_unix: u64,
+    size_bytes: u64,
+}
+
+/// Scans the app data directory for restaurant.db.bak-<unix-seconds> files
+/// and returns them (path, unix-seconds-stamp), newest first. Shared by
+/// list_database_backups (reporting) and backup_database_file (pruning) so
+/// the two can't quietly disagree on what counts as a backup file.
+fn scan_backup_files(dir: &std::path::Path) -> Result<Vec<(std::path::PathBuf, u64)>, String> {
+    if !dir.exists() {
+        return Ok(vec![]);
+    }
+    let mut backups = vec![];
+    for entry in std::fs::read_dir(dir).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let name = entry.file_name().to_string_lossy().to_string();
+        if let Some(stamp_str) = name.strip_prefix("restaurant.db.bak-") {
+            if let Ok(stamp) = stamp_str.parse::<u64>() {
+                backups.push((entry.path(), stamp));
+            }
+        }
+    }
+    backups.sort_by(|a, b| b.1.cmp(&a.1));
+    Ok(backups)
+}
+
 /// Copies restaurant.db -> restaurant.db.bak-<unix-seconds> in the app's
 /// data directory before migrations run, so there is always a rollback
 /// point. Safe to call even if no database file exists yet (first run).
+/// Also prunes anything past the newest MAX_KEPT_BACKUPS -- best-effort;
+/// a pruning failure (e.g. a file locked by antivirus) is logged and
+/// swallowed rather than failing the backup itself, since a slightly
+/// longer backup list is a far smaller problem than skipping the backup.
 #[tauri::command]
 fn backup_database_file(app: tauri::AppHandle) -> Result<String, String> {
     let dir = app
@@ -53,14 +97,14 @@ fn backup_database_file(app: tauri::AppHandle) -> Result<String, String> {
     let backup_path = dir.join(format!("restaurant.db.bak-{stamp}"));
 
     std::fs::copy(&db_path, &backup_path).map_err(|e| e.to_string())?;
-    Ok(backup_path.to_string_lossy().to_string())
-}
 
-#[derive(Serialize)]
-struct BackupInfo {
-    filename: String,
-    created_at_unix: u64,
-    size_bytes: u64,
+    if let Ok(existing) = scan_backup_files(&dir) {
+        for (old_path, _) in existing.into_iter().skip(MAX_KEPT_BACKUPS) {
+            let _ = std::fs::remove_file(old_path);
+        }
+    }
+
+    Ok(backup_path.to_string_lossy().to_string())
 }
 
 /// Lists every restaurant.db.bak-<unix-seconds> file in the app data
@@ -73,22 +117,14 @@ fn list_database_backups(app: tauri::AppHandle) -> Result<Vec<BackupInfo>, Strin
         .path()
         .app_data_dir()
         .map_err(|e| format!("could not resolve app data dir: {e}"))?;
-    if !dir.exists() {
-        return Ok(vec![]);
-    }
-
-    let mut backups = vec![];
-    for entry in std::fs::read_dir(&dir).map_err(|e| e.to_string())? {
-        let entry = entry.map_err(|e| e.to_string())?;
-        let name = entry.file_name().to_string_lossy().to_string();
-        if let Some(stamp_str) = name.strip_prefix("restaurant.db.bak-") {
-            if let Ok(stamp) = stamp_str.parse::<u64>() {
-                let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
-                backups.push(BackupInfo { filename: name, created_at_unix: stamp, size_bytes: size });
-            }
-        }
-    }
-    backups.sort_by(|a, b| b.created_at_unix.cmp(&a.created_at_unix));
+    let backups = scan_backup_files(&dir)?
+        .into_iter()
+        .map(|(path, stamp)| {
+            let filename = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+            let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+            BackupInfo { filename, created_at_unix: stamp, size_bytes: size }
+        })
+        .collect();
     Ok(backups)
 }
 
