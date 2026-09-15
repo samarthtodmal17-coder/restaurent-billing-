@@ -1030,12 +1030,26 @@
     inset:0;
     background:var(--bg);
     z-index:1000;
+    flex-direction:column;
     align-items:center;
     justify-content:center;
+    gap:16px;
     padding:20px;
   }
   .lock-screen.show{display:flex;}
   .lock-screen .card{max-width:320px; width:100%;}
+
+  /* ---- Vendor attribution -- for the restaurant owner (Manokshmi's own
+     customer) to see inside the app itself, not for their diners: never
+     shown on printed receipts/KOT tickets, only on screens the owner
+     looks at (the license/lock screen, and the bottom of Settings). ---- */
+  .vendor-watermark{
+    font-size:11px;
+    color:var(--muted);
+    opacity:0.7;
+    text-align:center;
+    letter-spacing:0.2px;
+  }
 
   /* ---- Credit Payments (formerly "Udhari") ---- */
   .credit-badge{
@@ -1666,6 +1680,7 @@
     <button class="btn" id="btnUnlock" style="margin-top:12px; width:100%;">Activate</button>
     <p class="muted" id="lockError" style="color:var(--danger); display:none; margin-top:8px;">Incorrect PIN. Please try again.</p>
   </div>
+  <div class="vendor-watermark">Product of Manokshmi Technologies</div>
 </div>
 
 <header class="appbar">
@@ -2221,6 +2236,8 @@
       <input type="file" id="importFile" accept=".json" style="display:none;">
       <button class="btn danger" id="btnResetData" style="margin-top:10px;">Erase All Data</button>
     </div>
+
+    <div class="vendor-watermark" style="margin:4px 0 12px;">Product of Manokshmi Technologies</div>
   </section>
 
 </main>
@@ -4578,7 +4595,7 @@ var qrcode = function() {
      ============================================================ */
   var LICENSE_API_BASE = "https://licensing-platform.pages.dev"; // set to the real deployed licensing-platform URL
   var PRODUCT_ID = "restaurant-pos";
-  var APP_VERSION = "0.1.17";
+  var APP_VERSION = "0.1.18";
   var DB_VERSION = "1";
   var LICENSED_TO = "";
 
