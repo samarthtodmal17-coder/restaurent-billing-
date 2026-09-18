@@ -28,14 +28,22 @@
 use tauri_plugin_sql::{Migration, MigrationKind};
 
 fn migrations() -> Vec<Migration> {
-    vec![Migration {
-        version: 1,
-        description: "init_schema",
-        sql: include_str!("../migrations/0001_init.sql"),
-        kind: MigrationKind::Up,
-    }]
-    // Next schema change ever needed: append a new Migration { version: 2, ... }
-    // here. Do not edit version 1 once any customer has run it.
+    vec![
+        Migration {
+            version: 1,
+            description: "init_schema",
+            sql: include_str!("../migrations/0001_init.sql"),
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 2,
+            description: "inventory_and_stock_management",
+            sql: include_str!("../migrations/0002_inventory.sql"),
+            kind: MigrationKind::Up,
+        },
+    ]
+    // Next schema change ever needed: append a new Migration { version: 3, ... }
+    // here. Do not edit version 1 or version 2 once any customer has run them.
 }
 
 /// Real OS-level device identifier for license activation (replaces the

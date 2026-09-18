@@ -1697,6 +1697,7 @@
 <nav class="tabs">
   <button class="tab-btn active" data-tab="billing">Billing</button>
   <button class="tab-btn" data-tab="menu">Menu &amp; Rates</button>
+  <button class="tab-btn" data-tab="inventory">Inventory</button>
   <button class="tab-btn" data-tab="history">Bill History</button>
   <button class="tab-btn" data-tab="credit">Credit Payments <span id="creditTabBadge" class="tab-badge" style="display:none;"></span></button>
   <button class="tab-btn" data-tab="dashboard">Dashboard</button>
@@ -1982,6 +1983,138 @@
       <div id="menuManageList" style="margin-top:10px;"></div>
     </div>
     <input type="file" id="editItemPhotoInput" accept="image/*" style="display:none;">
+  </section>
+
+  <!-- INVENTORY SCREEN -->
+  <section id="screen-inventory" class="screen">
+    <div class="card" id="cardInventoryAddItem">
+      <h2>Add Ingredient / Consumable</h2>
+      <div class="row">
+        <div>
+          <label>Item Name</label>
+          <input type="text" id="newInvItemName" placeholder="e.g. Basmati Rice, Cooking Oil, Paper Cups">
+        </div>
+        <div>
+          <label>Category (optional)</label>
+          <input type="text" id="newInvItemCategory" placeholder="e.g. Grocery, Dairy, Packaging">
+        </div>
+      </div>
+      <div class="row">
+        <div>
+          <label>Unit Type</label>
+          <select id="newInvItemUnitType">
+            <option value="weight">Weight (kg / g)</option>
+            <option value="volume">Volume (l / ml)</option>
+            <option value="count" selected>Count (pcs / packet / box)</option>
+          </select>
+        </div>
+        <div>
+          <label>Unit</label>
+          <select id="newInvItemUnitLabel"></select>
+        </div>
+        <div>
+          <label>Starting Stock</label>
+          <input type="number" id="newInvItemStock" min="0" step="0.01" placeholder="0">
+        </div>
+        <div>
+          <label>Low-Stock Alert Below</label>
+          <input type="number" id="newInvItemThreshold" min="0" step="0.01" placeholder="0">
+        </div>
+      </div>
+      <button class="btn" id="btnAddInvItem" style="margin-top:12px;">Add Ingredient</button>
+    </div>
+
+    <div class="card" id="cardInventoryItems">
+      <h2>Ingredients &amp; Consumables <span class="muted" id="invItemsCountBadge" style="font-weight:400;"></span></h2>
+      <input type="text" id="invItemsSearch" placeholder="Search by name or category...">
+      <div id="invItemsList" style="margin-top:10px;"></div>
+    </div>
+
+    <div class="card" id="cardInventoryPurchase">
+      <h2>Record a Purchase (Stock In)</h2>
+      <p class="muted">Buying from a supplier increases stock and updates the item's last known cost. Every purchase is kept in a permanent log.</p>
+      <div class="row">
+        <div>
+          <label>Item</label>
+          <select id="invPurchaseItem"></select>
+        </div>
+        <div>
+          <label>Supplier (optional)</label>
+          <input type="text" id="invPurchaseSupplier" placeholder="e.g. Local Grocer">
+        </div>
+      </div>
+      <div class="row">
+        <div>
+          <label>Quantity</label>
+          <input type="number" id="invPurchaseQty" min="0" step="0.01" placeholder="0">
+        </div>
+        <div>
+          <label>Cost per Unit (₹)</label>
+          <input type="number" id="invPurchaseUnitCost" min="0" step="0.01" placeholder="0.00">
+        </div>
+        <div>
+          <label>Date</label>
+          <input type="date" id="invPurchaseDate">
+        </div>
+      </div>
+      <label>Notes (optional)</label>
+      <input type="text" id="invPurchaseNotes" placeholder="e.g. Invoice #, quality note">
+      <button class="btn" id="btnRecordPurchase" style="margin-top:12px;">Record Purchase</button>
+    </div>
+
+    <div class="card" id="cardInventoryWastage">
+      <h2>Log Wastage / Spoilage (Stock Out)</h2>
+      <p class="muted">For stock lost to spoilage, breakage, or kitchen mistakes -- kept separate from sales so it never gets counted as a sale.</p>
+      <div class="row">
+        <div>
+          <label>Item</label>
+          <select id="invWastageItem"></select>
+        </div>
+        <div>
+          <label>Quantity Lost</label>
+          <input type="number" id="invWastageQty" min="0" step="0.01" placeholder="0">
+        </div>
+        <div>
+          <label>Date</label>
+          <input type="date" id="invWastageDate">
+        </div>
+      </div>
+      <label>Reason / Notes</label>
+      <input type="text" id="invWastageNotes" placeholder="e.g. Spoiled, dropped, expired">
+      <button class="btn danger" id="btnLogWastage" style="margin-top:12px;">Log Wastage</button>
+    </div>
+
+    <div class="card" id="cardInventoryLowStock">
+      <h2>Low-Stock Alerts</h2>
+      <div id="invLowStockList"></div>
+    </div>
+
+    <div class="card" id="cardInventoryValuation">
+      <h2>Stock Valuation Report</h2>
+      <p class="muted">Current stock × last purchase cost, by category -- a rough value of what's sitting in the store room right now.</p>
+      <div id="invValuationBox" class="totals-box"></div>
+    </div>
+
+    <div class="card" id="cardInventoryStockLog">
+      <h2>Stock Movement Log</h2>
+      <p class="muted">Every purchase, sale, wastage, and manual correction for any ingredient -- the full audit trail behind its current stock number.</p>
+      <div class="row">
+        <div>
+          <label>Item</label>
+          <select id="invLogItemFilter"><option value="">All Items</option></select>
+        </div>
+        <div>
+          <label>From</label>
+          <input type="date" id="invLogFromDate">
+        </div>
+        <div>
+          <label>To</label>
+          <input type="date" id="invLogToDate">
+        </div>
+      </div>
+      <button class="btn small secondary" id="btnLoadStockLog" style="margin-top:8px;">Load Movement Log</button>
+      <div id="invStockLogList" style="margin-top:10px;"></div>
+    </div>
   </section>
 
   <!-- HISTORY SCREEN -->
@@ -4595,7 +4728,7 @@ var qrcode = function() {
      ============================================================ */
   var LICENSE_API_BASE = "https://licensing-platform.pages.dev"; // set to the real deployed licensing-platform URL
   var PRODUCT_ID = "restaurant-pos";
-  var APP_VERSION = "0.1.18";
+  var APP_VERSION = "0.1.19";
   var DB_VERSION = "1";
   var LICENSED_TO = "";
 
@@ -4647,7 +4780,12 @@ var qrcode = function() {
     // any given day, the same way they report edited bills.
     deletedBillsLog: [],
     creditPayments: [],
-    nextItemCode: 101
+    nextItemCode: 101,
+    // Inventory & Stock Management (grocery/consumables). Purchases and
+    // the stock movement ledger are intentionally NOT here -- they're
+    // append-only tables read on demand, never loaded into this blob (see
+    // migrations/0002_inventory.sql).
+    inventoryItems: []
   };
 
   // In-memory copy of all app data. Populated once loadData()'s promise
@@ -4667,6 +4805,8 @@ var qrcode = function() {
   var billingItemSortMode = ""; // sort order for the Billing screen's item picker
   var collapsedCategories = {}; // which category sections are collapsed in Menu & Rates (in-memory only)
   var editingVariants = null; // working copy of variants while editing
+  var recipeEditingItemId = null; // item currently showing the Recipe (ingredients used) editor
+  var editingRecipeRows = null; // working copy of item.recipe while editing
   var currentReceiptBill = null; // last bill shown in the receipt preview
   var currentKotTicket = null; // last {order, ticketItems, isAddOn} shown as a KOT
 
@@ -4689,6 +4829,10 @@ var qrcode = function() {
     parsed.creditPayments = parsed.creditPayments || [];
     parsed.nextItemCode = parsed.nextItemCode || 101;
     parsed.tables = parsed.tables || defaultData.tables;
+    // Inventory & Stock Management: ingredient/consumable master list.
+    // Recipes live nested under each menu item (item.recipe), same as
+    // item.variants, so they need no separate default here.
+    parsed.inventoryItems = parsed.inventoryItems || [];
     return parsed;
   }
 
@@ -4805,7 +4949,15 @@ var qrcode = function() {
         db.select("SELECT * FROM deleted_bills_log ORDER BY deleted_at"),
         db.select("SELECT * FROM credit_payments"),
         db.select("SELECT * FROM credit_payment_allocations"),
-        db.select("SELECT value FROM counters WHERE key = 'next_item_code'")
+        db.select("SELECT value FROM counters WHERE key = 'next_item_code'"),
+        // Inventory & Stock Management: inventory_items and menu_item_recipes
+        // are small tables, loaded fully into the in-memory data blob just
+        // like menu_items/menu_item_variants. inventory_purchases and
+        // inventory_stock_log are deliberately NOT selected here -- they're
+        // append-only ledgers read on demand by their own report screens
+        // (see the note at the top of migrations/0002_inventory.sql).
+        db.select("SELECT * FROM inventory_items WHERE archived = 0"),
+        db.select("SELECT * FROM menu_item_recipes ORDER BY sort_order, rowid")
       ]).then(function(results){
         var biz = results[0][0] || {};
         var categoryRows = results[1];
@@ -4822,6 +4974,8 @@ var qrcode = function() {
         var creditRows = results[12];
         var allocRows = results[13];
         var counterRows = results[14];
+        var invItemRows = results[15];
+        var recipeRows = results[16];
 
         var business = {
           name: biz.name, logo: biz.logo, address: biz.address, phone: biz.phone,
@@ -4843,6 +4997,15 @@ var qrcode = function() {
         variantRows.forEach(function(v){
           (variantsByItem[v.menu_item_id] = variantsByItem[v.menu_item_id] || []).push({label: v.label, price: v.price});
         });
+        // Recipe (BOM) rows grouped by menu item, exactly like variantsByItem
+        // above -- each menu item gets a nested `recipe` array of
+        // {inventoryItemId, quantityPerUnit} used for auto-deduction on sale.
+        var recipesByItem = {};
+        recipeRows.forEach(function(rc){
+          (recipesByItem[rc.menu_item_id] = recipesByItem[rc.menu_item_id] || []).push({
+            inventoryItemId: rc.inventory_item_id, quantityPerUnit: rc.quantity_per_unit
+          });
+        });
         var menuItems = menuItemRows.map(function(r){
           var item = {id: r.id, code: r.code, name: r.name, categoryId: r.category_id, subcategoryId: r.subcategory_id};
           if(r.photo) item.photo = r.photo;
@@ -4852,7 +5015,19 @@ var qrcode = function() {
           if(r.tax_percent !== null && r.tax_percent !== undefined) item.taxPercent = r.tax_percent;
           var vs = variantsByItem[r.id];
           if(vs && vs.length){ item.variants = vs; } else { item.price = r.price; }
+          var rcp = recipesByItem[r.id];
+          if(rcp && rcp.length){ item.recipe = rcp; }
           return item;
+        });
+
+        // Inventory & Stock Management: ingredient/consumable master list.
+        var inventoryItems = invItemRows.map(function(r){
+          return {
+            id: r.id, name: r.name, category: r.category || "",
+            unitType: r.unit_type, unitLabel: r.unit_label,
+            currentStock: r.current_stock, reorderThreshold: r.reorder_threshold,
+            lastPurchaseCost: r.last_purchase_cost, createdAt: r.created_at
+          };
         });
 
         var itemsByOrder = {};
@@ -4926,7 +5101,8 @@ var qrcode = function() {
         return mergeWithDefaults({
           business: business, categories: categories, subcategories: subcategories,
           menuItems: menuItems, tables: tables, openOrders: openOrders, bills: bills,
-          deletedBillsLog: deletedBillsLog, creditPayments: creditPayments, nextItemCode: nextItemCode
+          deletedBillsLog: deletedBillsLog, creditPayments: creditPayments, nextItemCode: nextItemCode,
+          inventoryItems: inventoryItems
         });
       });
     }).catch(function(err){
@@ -5034,6 +5210,21 @@ var qrcode = function() {
       .then(function(){ return runSequential(data.tables, function(t, i){
         return db.execute("INSERT INTO tables (id, name, sort_order) VALUES ($1,$2,$3)", [t.id, t.name, i]);
       }); })
+      // Inventory & Stock Management: menu_item_recipes is deleted first
+      // since it has FK references into both menu_items and
+      // inventory_items -- then inventory_items itself is rewritten before
+      // the menu items loop below re-inserts recipe rows that reference it.
+      .then(function(){ return db.execute("DELETE FROM menu_item_recipes"); })
+      .then(function(){ return db.execute("DELETE FROM inventory_items"); })
+      .then(function(){ return runSequential(data.inventoryItems || [], function(inv){
+        return db.execute(
+          "INSERT INTO inventory_items (id, name, category, unit_type, unit_label, current_stock, reorder_threshold, last_purchase_cost, archived, created_at) " +
+          "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)",
+          [inv.id, inv.name, inv.category || "", inv.unitType || "count", inv.unitLabel || "pcs",
+           inv.currentStock || 0, inv.reorderThreshold || 0, inv.lastPurchaseCost || 0, 0,
+           inv.createdAt || new Date().toISOString()]
+        );
+      }); })
       .then(function(){ return db.execute("DELETE FROM menu_item_variants"); })
       .then(function(){ return db.execute("DELETE FROM menu_items"); })
       .then(function(){ return runSequential(data.menuItems, function(m){
@@ -5049,6 +5240,12 @@ var qrcode = function() {
           return runSequential(m.variants, function(v, i){
             return db.execute("INSERT INTO menu_item_variants (id, menu_item_id, label, price, sort_order) VALUES ($1,$2,$3,$4,$5)",
               [m.id + "-v" + i, m.id, v.label, v.price, i]);
+          });
+        }).then(function(){
+          if(!m.recipe || !m.recipe.length) return;
+          return runSequential(m.recipe, function(rc, i){
+            return db.execute("INSERT INTO menu_item_recipes (id, menu_item_id, inventory_item_id, quantity_per_unit, sort_order) VALUES ($1,$2,$3,$4,$5)",
+              [m.id + "-r" + i, m.id, rc.inventoryItemId, rc.quantityPerUnit || 0, i]);
           });
         });
       }); })
@@ -5277,6 +5474,12 @@ var qrcode = function() {
     "cardCurrentBill": true,  // Current Bill
     "cardMenuAddItem": true,        // Add Menu Item / Rate
     "cardMenuItems": true,          // Menu Items
+    "cardInventoryAddItem": true,   // Add Ingredient / Consumable
+    "cardInventoryItems": true,     // Ingredients & Consumables list
+    "cardInventoryPurchase": true,  // Record a Purchase
+    "cardInventoryWastage": true,   // Log Wastage / Spoilage
+    "cardInventoryLowStock": true,  // Low-Stock Alerts
+    "cardInventoryValuation": true, // Stock Valuation Report
     "screen-history-card-0": true,  // Bill History
     "screen-credit-card-0": true,   // Credit Payments summary
     "screen-credit-card-1": true,   // Customers with Dues
@@ -5407,6 +5610,7 @@ var qrcode = function() {
     document.querySelectorAll(".screen").forEach(function(s){ s.classList.remove("active"); });
     document.getElementById("screen-" + tabName).classList.add("active");
     if(tabName === "menu") renderMenuScreen();
+    if(tabName === "inventory") renderInventoryScreen();
     if(tabName === "history") renderHistory();
     if(tabName === "settings") renderSettingsScreen();
     if(tabName === "billing") renderBillingScreen();
@@ -5542,6 +5746,15 @@ var qrcode = function() {
     reader.onload = function(ev){
       try{
         var imported = JSON.parse(ev.target.result);
+        // inventory_purchases/inventory_stock_log ride along in the JSON
+        // as two extra top-level arrays (see exportBackupNow above), not
+        // as part of the blob mergeWithDefaults() deals with -- pull them
+        // out first so they don't get silently dropped, then restore them
+        // separately via restoreInventoryLedgers().
+        var importedPurchases = imported.inventoryPurchases || [];
+        var importedStockLog = imported.inventoryStockLog || [];
+        delete imported.inventoryPurchases;
+        delete imported.inventoryStockLog;
         data = mergeWithDefaults(imported); // fills in any fields missing from an older backup (e.g. subcategories)
         activeOrderId = null;
         ensureItemCodes();
@@ -5549,7 +5762,12 @@ var qrcode = function() {
         renderHeader();
         renderSettingsScreen();
         renderBillingScreen();
-        showToast("Backup imported successfully");
+        restoreInventoryLedgers(importedPurchases, importedStockLog).then(function(){
+          showToast("Backup imported successfully");
+        }).catch(function(err){
+          console.error("Restoring inventory purchase/stock history failed", err);
+          showToast("Backup imported, but purchase/stock history could not be restored");
+        });
       }catch(err){
         showToast("Invalid backup file");
       }
@@ -5965,8 +6183,158 @@ var qrcode = function() {
     return btn;
   }
 
+  // Recipe (Bill of Materials): which ingredients, and how much of each,
+  // this menu item consumes per unit sold -- stored as item.recipe (see
+  // migrations/0002_inventory.sql's menu_item_recipes table). Auto-deducts
+  // from inventory on sale (see the bill save/edit/delete hooks).
+  function buildRecipeActionBtn(item){
+    var btn = document.createElement("button");
+    btn.className = "btn small secondary";
+    var count = item.recipe ? item.recipe.length : 0;
+    btn.textContent = count ? ("Recipe (" + count + ")") : "Add Recipe";
+    btn.addEventListener("click", function(){
+      recipeEditingItemId = item.id;
+      editingRecipeRows = item.recipe ? JSON.parse(JSON.stringify(item.recipe)) : [];
+      renderMenuScreen();
+    });
+    return btn;
+  }
+
   function renderMenuItemRow(list, item){
     var hasVariants = item.variants && item.variants.length > 0;
+
+    if(recipeEditingItemId === item.id){
+      // ---- Recipe editor: link ingredients + quantity-per-sale ----
+      var recBox = document.createElement("div");
+      recBox.className = "edit-box";
+      var recTitle = document.createElement("div");
+      recTitle.className = "title";
+      recTitle.textContent = "Recipe (Ingredients Used) — " + item.name;
+      recBox.appendChild(recTitle);
+
+      if(data.inventoryItems.length === 0){
+        var noInv = document.createElement("p");
+        noInv.className = "muted";
+        noInv.textContent = "No ingredients set up yet -- add some on the Inventory tab first.";
+        recBox.appendChild(noInv);
+      } else {
+        editingRecipeRows.forEach(function(r, rIdx){
+          var invItem = findInventoryItem(r.inventoryItemId);
+          var rRow = document.createElement("div");
+          rRow.className = "variant-edit-row";
+
+          var nameSpan = document.createElement("span");
+          nameSpan.style.flex = "1 1 auto";
+          nameSpan.textContent = invItem ? invItem.name : "(deleted ingredient)";
+
+          var qtyInput = document.createElement("input");
+          qtyInput.type = "number";
+          qtyInput.min = "0";
+          qtyInput.step = "0.01";
+          qtyInput.value = r.quantityPerUnit;
+          qtyInput.placeholder = "Qty per sale";
+          qtyInput.style.flex = "0 0 90px";
+          qtyInput.addEventListener("input", function(){ r.quantityPerUnit = parseFloat(this.value) || 0; });
+
+          var unitSpan = document.createElement("span");
+          unitSpan.className = "muted";
+          unitSpan.style.flex = "0 0 auto";
+          unitSpan.textContent = invItem ? invItem.unitLabel : "";
+
+          var removeBtn = document.createElement("button");
+          removeBtn.className = "btn small danger";
+          removeBtn.textContent = "✕";
+          removeBtn.style.flex = "0 0 auto";
+          removeBtn.addEventListener("click", function(){
+            editingRecipeRows.splice(rIdx, 1);
+            renderMenuScreen();
+          });
+
+          rRow.appendChild(nameSpan);
+          rRow.appendChild(qtyInput);
+          rRow.appendChild(unitSpan);
+          rRow.appendChild(removeBtn);
+          recBox.appendChild(rRow);
+        });
+
+        var usedIds = editingRecipeRows.map(function(r){ return r.inventoryItemId; });
+        var availableInv = data.inventoryItems.filter(function(i){ return usedIds.indexOf(i.id) === -1; });
+
+        var addRecRow = document.createElement("div");
+        addRecRow.className = "variant-edit-row";
+        var invSelect = document.createElement("select");
+        invSelect.style.flex = "1 1 auto";
+        if(availableInv.length === 0){
+          var doneOpt = document.createElement("option");
+          doneOpt.value = "";
+          doneOpt.textContent = "All ingredients already added";
+          invSelect.appendChild(doneOpt);
+          invSelect.disabled = true;
+        } else {
+          availableInv.slice().sort(function(a, b){ return a.name.localeCompare(b.name); }).forEach(function(i){
+            var opt = document.createElement("option");
+            opt.value = i.id;
+            opt.textContent = i.name + " (" + i.unitLabel + ")";
+            invSelect.appendChild(opt);
+          });
+        }
+        var qtyNewInput = document.createElement("input");
+        qtyNewInput.type = "number";
+        qtyNewInput.min = "0";
+        qtyNewInput.step = "0.01";
+        qtyNewInput.placeholder = "Qty per sale";
+        qtyNewInput.style.flex = "0 0 90px";
+        var addIngBtn = document.createElement("button");
+        addIngBtn.className = "btn small secondary";
+        addIngBtn.textContent = "+ Add";
+        addIngBtn.style.flex = "0 0 auto";
+        addIngBtn.disabled = availableInv.length === 0;
+        addIngBtn.addEventListener("click", function(){
+          if(!invSelect.value){ showToast("Pick an ingredient first"); return; }
+          var qty = parseFloat(qtyNewInput.value);
+          if(isNaN(qty) || qty <= 0){ showToast("Enter a quantity greater than 0"); return; }
+          editingRecipeRows.push({inventoryItemId: invSelect.value, quantityPerUnit: qty});
+          renderMenuScreen();
+        });
+        addRecRow.appendChild(invSelect);
+        addRecRow.appendChild(qtyNewInput);
+        addRecRow.appendChild(addIngBtn);
+        recBox.appendChild(addRecRow);
+      }
+
+      var recActionsRow = document.createElement("div");
+      recActionsRow.style.marginTop = "10px";
+      recActionsRow.style.display = "flex";
+      recActionsRow.style.gap = "8px";
+
+      var recSaveBtn = document.createElement("button");
+      recSaveBtn.className = "btn small";
+      recSaveBtn.textContent = "Save Recipe";
+      recSaveBtn.addEventListener("click", function(){
+        item.recipe = editingRecipeRows.filter(function(r){ return r.quantityPerUnit > 0; });
+        recipeEditingItemId = null;
+        editingRecipeRows = null;
+        saveData();
+        renderMenuScreen();
+        showToast("Recipe updated");
+      });
+
+      var recCancelBtn = document.createElement("button");
+      recCancelBtn.className = "btn small secondary";
+      recCancelBtn.textContent = "Cancel";
+      recCancelBtn.addEventListener("click", function(){
+        recipeEditingItemId = null;
+        editingRecipeRows = null;
+        renderMenuScreen();
+      });
+
+      recActionsRow.appendChild(recSaveBtn);
+      recActionsRow.appendChild(recCancelBtn);
+      recBox.appendChild(recActionsRow);
+
+      list.appendChild(recBox);
+      return;
+    }
 
     if(movingItemId === item.id){
       // ---- Move mode: change this item's category/subcategory ----
@@ -6272,6 +6640,7 @@ var qrcode = function() {
       actions.appendChild(editTaxBtn);
       actions.appendChild(kotBtn);
       actions.appendChild(buildStockActionBtn(item));
+      actions.appendChild(buildRecipeActionBtn(item));
       buildPhotoActionBtns(item).forEach(function(b){ actions.appendChild(b); });
       actions.appendChild(delBtn);
       topLine.appendChild(actions);
@@ -6393,6 +6762,7 @@ var qrcode = function() {
       actions2.appendChild(editTaxBtn2);
       actions2.appendChild(kotBtn2);
       actions2.appendChild(buildStockActionBtn(item));
+      actions2.appendChild(buildRecipeActionBtn(item));
       buildPhotoActionBtns(item).forEach(function(b){ actions2.appendChild(b); });
       actions2.appendChild(delBtn2);
       row.appendChild(actions2);
@@ -7065,6 +7435,502 @@ var qrcode = function() {
 
       wrap.appendChild(chip);
     });
+  }
+
+  /* ================= INVENTORY & STOCK MANAGEMENT =================
+     data.inventoryItems is a small blob-backed table (see loadData()/
+     doSave() above) -- add/edit/delete go through it + saveData(), same
+     as menu items. inventory_purchases and inventory_stock_log are
+     append-only audit tables: insertInventoryPurchase()/
+     insertInventoryStockLog() write straight to them via db.execute() the
+     moment something happens, and are NEVER routed through the data blob
+     or saveData() -- see the note at the top of
+     migrations/0002_inventory.sql for why (doSave() rewrites its whole
+     blob on every single bill save; a ledger that grows every bill would
+     make that rewrite slower forever). */
+  var editingInvItemId = null;
+
+  var UNIT_LABEL_OPTIONS = {
+    weight: [{value:"kg", label:"kg"}, {value:"g", label:"g"}],
+    volume: [{value:"l", label:"l (litre)"}, {value:"ml", label:"ml"}],
+    count: [{value:"pcs", label:"pcs"}, {value:"packet", label:"packet"}, {value:"box", label:"box"}]
+  };
+
+  function populateInvUnitLabelSelect(){
+    var typeSel = document.getElementById("newInvItemUnitType");
+    var labelSel = document.getElementById("newInvItemUnitLabel");
+    var prevVal = labelSel.value;
+    var opts = UNIT_LABEL_OPTIONS[typeSel.value] || UNIT_LABEL_OPTIONS.count;
+    labelSel.innerHTML = "";
+    opts.forEach(function(o){
+      var opt = document.createElement("option");
+      opt.value = o.value;
+      opt.textContent = o.label;
+      labelSel.appendChild(opt);
+    });
+    if(opts.some(function(o){ return o.value === prevVal; })) labelSel.value = prevVal;
+  }
+  document.getElementById("newInvItemUnitType").addEventListener("change", populateInvUnitLabelSelect);
+
+  function findInventoryItem(id){
+    var found = null;
+    data.inventoryItems.some(function(i){ if(i.id === id){ found = i; return true; } return false; });
+    return found;
+  }
+
+  function isLowStock(item){
+    return (item.reorderThreshold || 0) > 0 && (item.currentStock || 0) <= item.reorderThreshold;
+  }
+
+  // Direct append-only insert into the stock movement ledger -- see the
+  // big comment at the top of this section for why this bypasses
+  // saveData()/doSave() entirely. whenIso lets a backdated wastage/
+  // purchase entry log against the date the owner actually picked,
+  // instead of always stamping "now".
+  function insertInventoryStockLog(itemId, changeQty, reason, referenceBillId, referencePurchaseId, notes, whenIso){
+    return getDb().then(function(db){
+      return db.execute(
+        "INSERT INTO inventory_stock_log (item_id, change_qty, reason, reference_bill_id, reference_purchase_id, notes, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7)",
+        [itemId, changeQty, reason, referenceBillId || null, referencePurchaseId || null, notes || "", whenIso || new Date().toISOString()]
+      );
+    });
+  }
+
+  function insertInventoryPurchase(item, qty, unitCost, supplierName, dateStr, notes){
+    var purchaseId = uid("purch");
+    var totalCost = qty * unitCost;
+    var whenIso = dateStr ? new Date(dateStr + "T" + new Date().toTimeString().slice(0,8)).toISOString() : new Date().toISOString();
+    return getDb().then(function(db){
+      return db.execute(
+        "INSERT INTO inventory_purchases (id, item_id, supplier_name, quantity, unit_cost, total_cost, purchase_date, notes, created_at) " +
+        "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)",
+        [purchaseId, item.id, supplierName || "", qty, unitCost, totalCost, dateStr, notes || "", new Date().toISOString()]
+      );
+    }).then(function(){
+      return insertInventoryStockLog(item.id, qty, "purchase", null, purchaseId, notes, whenIso);
+    });
+  }
+
+  // Only called from a full "Import Backup" restore (see the importFile
+  // change handler below) -- the one place wiping and rewriting
+  // inventory_purchases/inventory_stock_log wholesale is appropriate,
+  // since restoring a backup is meant to replace everything on this
+  // device, unlike doSave() which does that same wipe+rewrite pattern for
+  // the blob-backed tables on every single bill save (exactly why these
+  // two tables are kept out of doSave() to begin with).
+  function restoreInventoryLedgers(purchases, stockLog){
+    return getDb().then(function(db){
+      return db.execute("DELETE FROM inventory_purchases")
+        .then(function(){ return db.execute("DELETE FROM inventory_stock_log"); })
+        .then(function(){
+          return runSequential(purchases || [], function(p){
+            return db.execute(
+              "INSERT INTO inventory_purchases (id, item_id, supplier_name, quantity, unit_cost, total_cost, purchase_date, notes, created_at) " +
+              "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)",
+              [p.id, p.item_id, p.supplier_name || "", p.quantity, p.unit_cost, p.total_cost, p.purchase_date, p.notes || "", p.created_at]
+            );
+          });
+        })
+        .then(function(){
+          return runSequential(stockLog || [], function(l){
+            return db.execute(
+              "INSERT INTO inventory_stock_log (item_id, change_qty, reason, reference_bill_id, reference_purchase_id, notes, created_at) " +
+              "VALUES ($1,$2,$3,$4,$5,$6,$7)",
+              [l.item_id, l.change_qty, l.reason, l.reference_bill_id || null, l.reference_purchase_id || null, l.notes || "", l.created_at]
+            );
+          });
+        });
+    });
+  }
+
+  // ---- Recipe-based auto-deduction (bill save/edit/delete hooks) ----
+  // Given a bill/order's line items, works out how much of each ingredient
+  // they consume via each menu item's recipe (see the Recipe editor in
+  // Menu & Rates), aggregated across items that happen to share an
+  // ingredient. Recipes are keyed by menu item, not by variant/size -- a
+  // size-based recipe would be a reasonable future refinement, but every
+  // size of an item shares one recipe for now.
+  function computeIngredientConsumption(items){
+    var consumption = {};
+    (items || []).forEach(function(it){
+      if(!it.itemId) return;
+      var menuItem = data.menuItems.find(function(m){ return m.id === it.itemId; });
+      if(!menuItem || !menuItem.recipe || !menuItem.recipe.length) return;
+      menuItem.recipe.forEach(function(r){
+        var qty = (r.quantityPerUnit || 0) * (it.qty || 0);
+        if(qty <= 0) return;
+        consumption[r.inventoryItemId] = (consumption[r.inventoryItemId] || 0) + qty;
+      });
+    });
+    return consumption;
+  }
+
+  // Deducts stock immediately (synchronously, in-memory) so the
+  // saveData() call that follows right after -- per this app's existing
+  // "mutate then fire-and-forget saveData()" convention, e.g. the
+  // btnSaveBill handler below -- picks up the updated numbers in the same
+  // full-blob resync as the bill itself. The append-only ledger insert is
+  // fired separately and is NOT awaited by the caller, matching how
+  // saveData() itself is already called fire-and-forget everywhere else;
+  // any failure is logged to the console rather than blocking billing.
+  function applyIngredientConsumption(consumption, reason, referenceBillId){
+    var ids = Object.keys(consumption || {});
+    ids.forEach(function(invItemId){
+      var item = findInventoryItem(invItemId);
+      if(item) item.currentStock = (item.currentStock || 0) - consumption[invItemId];
+    });
+    if(ids.length === 0) return;
+    runSequential(ids, function(invItemId){
+      return insertInventoryStockLog(invItemId, -consumption[invItemId], reason, referenceBillId || null, null, "");
+    }).catch(function(err){ console.error("Inventory stock log insert failed", err); });
+  }
+
+  // Undoes a previous consumption (adds the stock back) -- used when a
+  // bill that had already deducted stock is edited (undo the old amounts
+  // before applying the new ones) or deleted (undo entirely). Logged as
+  // reason="reversal" so the movement log reads as an explicit undo, not
+  // a second unrelated sale.
+  function reverseIngredientConsumption(consumption, referenceBillId){
+    var ids = Object.keys(consumption || {});
+    ids.forEach(function(invItemId){
+      var item = findInventoryItem(invItemId);
+      if(item) item.currentStock = (item.currentStock || 0) + consumption[invItemId];
+    });
+    if(ids.length === 0) return;
+    runSequential(ids, function(invItemId){
+      return insertInventoryStockLog(invItemId, consumption[invItemId], "reversal", referenceBillId || null, null, "");
+    }).catch(function(err){ console.error("Inventory stock log insert failed", err); });
+  }
+
+  document.getElementById("btnAddInvItem").addEventListener("click", function(){
+    var name = document.getElementById("newInvItemName").value.trim();
+    if(!name){ showToast("Enter an ingredient name first"); return; }
+    var category = document.getElementById("newInvItemCategory").value.trim();
+    var unitType = document.getElementById("newInvItemUnitType").value;
+    var unitLabel = document.getElementById("newInvItemUnitLabel").value;
+    var startingStock = parseFloat(document.getElementById("newInvItemStock").value) || 0;
+    var threshold = parseFloat(document.getElementById("newInvItemThreshold").value) || 0;
+    data.inventoryItems.push({
+      id: uid("inv"), name: name, category: category, unitType: unitType, unitLabel: unitLabel,
+      currentStock: startingStock, reorderThreshold: threshold, lastPurchaseCost: 0,
+      createdAt: new Date().toISOString()
+    });
+    saveData();
+    document.getElementById("newInvItemName").value = "";
+    document.getElementById("newInvItemCategory").value = "";
+    document.getElementById("newInvItemStock").value = "";
+    document.getElementById("newInvItemThreshold").value = "";
+    showToast("Ingredient added");
+    renderInventoryScreen();
+  });
+
+  function renderInvItemsList(){
+    var query = (document.getElementById("invItemsSearch").value || "").trim().toLowerCase();
+    var list = document.getElementById("invItemsList");
+    list.innerHTML = "";
+
+    document.getElementById("invItemsCountBadge").textContent =
+      "(" + data.inventoryItems.length + (data.inventoryItems.length === 1 ? " item" : " items") + ")";
+
+    var items = data.inventoryItems.filter(function(i){
+      if(!query) return true;
+      return i.name.toLowerCase().indexOf(query) !== -1 || (i.category || "").toLowerCase().indexOf(query) !== -1;
+    }).slice().sort(function(a, b){ return a.name.localeCompare(b.name); });
+
+    if(items.length === 0){
+      list.innerHTML = '<div class="empty-state">' +
+        (data.inventoryItems.length === 0 ? "No ingredients yet. Add your first one above." : "No ingredients match your search.") +
+        '</div>';
+      return;
+    }
+
+    items.forEach(function(item){
+      var row = document.createElement("div");
+      row.className = "item-row";
+      row.style.flexWrap = "wrap";
+      var low = isLowStock(item);
+      row.innerHTML =
+        '<div><div class="item-name">' + escapeHtml(item.name) +
+        (low ? ' <span style="color:var(--danger); font-weight:700;">&#9679; Low Stock</span>' : '') + '</div>' +
+        '<div class="item-cat">' + (item.category ? escapeHtml(item.category) + " · " : "") +
+        "Stock: " + item.currentStock + " " + escapeHtml(item.unitLabel) +
+        (item.reorderThreshold ? " · Alert below " + item.reorderThreshold + " " + escapeHtml(item.unitLabel) : "") +
+        (item.lastPurchaseCost ? " · Last cost " + fmt(item.lastPurchaseCost) + "/" + escapeHtml(item.unitLabel) : "") +
+        '</div></div>';
+
+      var actionsWrap = document.createElement("div");
+      actionsWrap.style.display = "flex";
+      actionsWrap.style.gap = "6px";
+
+      var editBtn = document.createElement("button");
+      editBtn.className = "btn small secondary";
+      editBtn.textContent = "Edit";
+      editBtn.addEventListener("click", function(){
+        editingInvItemId = (editingInvItemId === item.id) ? null : item.id;
+        renderInvItemsList();
+      });
+
+      var delBtn = document.createElement("button");
+      delBtn.className = "btn small danger";
+      delBtn.textContent = "Delete";
+      delBtn.addEventListener("click", function(){
+        var usedInRecipe = data.menuItems.some(function(m){
+          return m.recipe && m.recipe.some(function(r){ return r.inventoryItemId === item.id; });
+        });
+        if(usedInRecipe){
+          showToast("This ingredient is used in a menu item's recipe -- remove it from the recipe first");
+          return;
+        }
+        if(!confirm('Delete "' + item.name + '"? Its purchase/wastage history stays on record for past reports, but it can no longer be bought, used, or auto-deducted going forward.')) return;
+        data.inventoryItems = data.inventoryItems.filter(function(i){ return i.id !== item.id; });
+        saveData();
+        renderInventoryScreen();
+      });
+
+      actionsWrap.appendChild(editBtn);
+      actionsWrap.appendChild(delBtn);
+      row.appendChild(actionsWrap);
+
+      if(editingInvItemId === item.id){
+        var editBox = document.createElement("div");
+        editBox.className = "edit-box";
+        editBox.style.width = "100%";
+        editBox.innerHTML =
+          '<label>Name</label><input type="text" class="inv-edit-name" value="' + escapeHtml(item.name) + '">' +
+          '<label>Category</label><input type="text" class="inv-edit-category" value="' + escapeHtml(item.category || "") + '">' +
+          '<label>Low-Stock Alert Below</label><input type="number" min="0" step="0.01" class="inv-edit-threshold" value="' + (item.reorderThreshold || 0) + '">' +
+          '<label>Current Stock (manual correction)</label><input type="number" min="0" step="0.01" class="inv-edit-stock" value="' + (item.currentStock || 0) + '">' +
+          '<button class="btn small" style="margin-top:8px;">Save Changes</button>';
+        var nameInput = editBox.querySelector(".inv-edit-name");
+        var catInput = editBox.querySelector(".inv-edit-category");
+        var threshInput = editBox.querySelector(".inv-edit-threshold");
+        var stockInput = editBox.querySelector(".inv-edit-stock");
+        var saveBtn = editBox.querySelector("button");
+        saveBtn.addEventListener("click", function(){
+          var newName = nameInput.value.trim();
+          if(!newName){ showToast("Name can't be empty"); return; }
+          var oldStock = item.currentStock || 0;
+          var newStock = parseFloat(stockInput.value) || 0;
+          item.name = newName;
+          item.category = catInput.value.trim();
+          item.reorderThreshold = parseFloat(threshInput.value) || 0;
+          item.currentStock = newStock;
+          var diff = newStock - oldStock;
+          var finishSave = function(){
+            editingInvItemId = null;
+            saveData();
+            showToast("Ingredient updated");
+            renderInventoryScreen();
+          };
+          if(Math.abs(diff) > 0.0001){
+            // A manual stock correction still gets its own ledger entry
+            // (reason="adjustment") so inventory_stock_log stays a
+            // complete explanation of every change to current_stock, not
+            // just the ones made through Purchase/Wastage.
+            insertInventoryStockLog(item.id, diff, "adjustment", null, null, "Manual correction via Inventory screen").then(finishSave).catch(finishSave);
+          } else {
+            finishSave();
+          }
+        });
+        row.appendChild(editBox);
+      }
+
+      list.appendChild(row);
+    });
+  }
+  document.getElementById("invItemsSearch").addEventListener("input", renderInvItemsList);
+
+  function populateInvItemSelect(selectId){
+    var sel = document.getElementById(selectId);
+    var prevVal = sel.value;
+    sel.innerHTML = "";
+    if(data.inventoryItems.length === 0){
+      var opt = document.createElement("option");
+      opt.value = "";
+      opt.textContent = "Add an ingredient first";
+      sel.appendChild(opt);
+      return;
+    }
+    data.inventoryItems.slice().sort(function(a, b){ return a.name.localeCompare(b.name); }).forEach(function(i){
+      var opt = document.createElement("option");
+      opt.value = i.id;
+      opt.textContent = i.name + " (" + i.unitLabel + ")";
+      sel.appendChild(opt);
+    });
+    if(prevVal) sel.value = prevVal;
+  }
+
+  document.getElementById("btnRecordPurchase").addEventListener("click", function(){
+    var item = findInventoryItem(document.getElementById("invPurchaseItem").value);
+    if(!item){ showToast("Add an ingredient first"); return; }
+    var qty = parseFloat(document.getElementById("invPurchaseQty").value) || 0;
+    if(qty <= 0){ showToast("Enter a quantity greater than 0"); return; }
+    var unitCost = parseFloat(document.getElementById("invPurchaseUnitCost").value) || 0;
+    var supplier = document.getElementById("invPurchaseSupplier").value.trim();
+    var dateStr = document.getElementById("invPurchaseDate").value || new Date().toISOString().slice(0, 10);
+    var notes = document.getElementById("invPurchaseNotes").value.trim();
+
+    insertInventoryPurchase(item, qty, unitCost, supplier, dateStr, notes).then(function(){
+      item.currentStock = (item.currentStock || 0) + qty;
+      if(unitCost > 0) item.lastPurchaseCost = unitCost;
+      return saveData();
+    }).then(function(){
+      showToast("Purchase recorded, stock updated");
+      document.getElementById("invPurchaseQty").value = "";
+      document.getElementById("invPurchaseUnitCost").value = "";
+      document.getElementById("invPurchaseSupplier").value = "";
+      document.getElementById("invPurchaseNotes").value = "";
+      renderInventoryScreen();
+    }).catch(function(err){
+      console.error("Recording purchase failed", err);
+      showToast("Could not record purchase -- try again");
+    });
+  });
+
+  document.getElementById("btnLogWastage").addEventListener("click", function(){
+    var item = findInventoryItem(document.getElementById("invWastageItem").value);
+    if(!item){ showToast("Add an ingredient first"); return; }
+    var qty = parseFloat(document.getElementById("invWastageQty").value) || 0;
+    if(qty <= 0){ showToast("Enter a quantity greater than 0"); return; }
+    var dateStr = document.getElementById("invWastageDate").value || new Date().toISOString().slice(0, 10);
+    var whenIso = new Date(dateStr + "T" + new Date().toTimeString().slice(0, 8)).toISOString();
+    var notes = document.getElementById("invWastageNotes").value.trim();
+
+    insertInventoryStockLog(item.id, -qty, "wastage", null, null, notes, whenIso).then(function(){
+      item.currentStock = Math.max(0, (item.currentStock || 0) - qty);
+      return saveData();
+    }).then(function(){
+      showToast("Wastage logged, stock updated");
+      document.getElementById("invWastageQty").value = "";
+      document.getElementById("invWastageNotes").value = "";
+      renderInventoryScreen();
+    }).catch(function(err){
+      console.error("Logging wastage failed", err);
+      showToast("Could not log wastage -- try again");
+    });
+  });
+
+  // ---- Low-stock alerts: a plain filtered view of the in-memory blob,
+  // no DB query needed (current_stock/reorder_threshold already loaded). ----
+  function renderLowStockList(){
+    var list = document.getElementById("invLowStockList");
+    var lowItems = data.inventoryItems.filter(isLowStock).sort(function(a, b){ return a.name.localeCompare(b.name); });
+    if(lowItems.length === 0){
+      list.innerHTML = '<div class="empty-state">Nothing below its alert threshold right now.</div>';
+      return;
+    }
+    list.innerHTML = lowItems.map(function(item){
+      return '<div class="item-row"><div><div class="item-name">' + escapeHtml(item.name) + '</div>' +
+        '<div class="item-cat">' + (item.category ? escapeHtml(item.category) + " · " : "") +
+        "Stock: " + item.currentStock + " " + escapeHtml(item.unitLabel) + '</div></div>' +
+        '<div style="font-weight:700; color:var(--danger);">Alert below ' + item.reorderThreshold + " " + escapeHtml(item.unitLabel) + '</div></div>';
+    }).join("");
+  }
+
+  // ---- Stock valuation: current_stock x last_purchase_cost, grouped by
+  // category -- also just the in-memory blob, no DB query needed. This is
+  // a rough estimate (last cost paid, not true weighted-average cost),
+  // called out in the card's own subtitle rather than hidden. ----
+  function renderValuationReport(){
+    var box = document.getElementById("invValuationBox");
+    if(data.inventoryItems.length === 0){
+      box.innerHTML = '<div class="empty-state">Add ingredients to see stock valuation.</div>';
+      return;
+    }
+    var byCategory = {};
+    var grandTotal = 0;
+    data.inventoryItems.forEach(function(item){
+      var value = (item.currentStock || 0) * (item.lastPurchaseCost || 0);
+      grandTotal += value;
+      var cat = item.category || "Uncategorized";
+      byCategory[cat] = (byCategory[cat] || 0) + value;
+    });
+    var rows = Object.keys(byCategory).sort().map(function(cat){
+      return '<div class="line"><span>' + escapeHtml(cat) + '</span><span>' + fmt(byCategory[cat]) + '</span></div>';
+    }).join("");
+    box.innerHTML = rows + '<div class="line grand"><span>Total Stock Value</span><span>' + fmt(grandTotal) + '</span></div>';
+  }
+
+  function populateInvLogItemFilter(){
+    var sel = document.getElementById("invLogItemFilter");
+    var prevVal = sel.value;
+    sel.innerHTML = '<option value="">All Items</option>';
+    data.inventoryItems.slice().sort(function(a, b){ return a.name.localeCompare(b.name); }).forEach(function(i){
+      var opt = document.createElement("option");
+      opt.value = i.id;
+      opt.textContent = i.name;
+      sel.appendChild(opt);
+    });
+    if(prevVal) sel.value = prevVal;
+  }
+
+  function stockLogReasonLabel(reason){
+    var map = {
+      purchase: "Purchase (Stock In)", sale: "Sale (Auto-Deducted)", wastage: "Wastage / Spoilage",
+      adjustment: "Manual Adjustment", reversal: "Reversal (Bill Edited/Deleted)"
+    };
+    return map[reason] || reason;
+  }
+
+  // The one part of the Inventory screen that queries inventory_stock_log
+  // directly instead of reading data.inventoryItems -- on demand, filtered,
+  // never loaded wholesale into the blob (see the big comment at the top
+  // of this section).
+  function loadStockMovementLog(){
+    var list = document.getElementById("invStockLogList");
+    list.innerHTML = '<div class="empty-state">Loading...</div>';
+    var itemId = document.getElementById("invLogItemFilter").value;
+    var fromDate = document.getElementById("invLogFromDate").value;
+    var toDate = document.getElementById("invLogToDate").value;
+
+    var clauses = [];
+    var params = [];
+    var n = 1;
+    if(itemId){ clauses.push("l.item_id = $" + n); params.push(itemId); n++; }
+    if(fromDate){ clauses.push("l.created_at >= $" + n); params.push(fromDate + "T00:00:00"); n++; }
+    if(toDate){ clauses.push("l.created_at <= $" + n); params.push(toDate + "T23:59:59"); n++; }
+    var where = clauses.length ? ("WHERE " + clauses.join(" AND ")) : "";
+
+    getDb().then(function(db){
+      return db.select(
+        "SELECT l.*, i.name as item_name, i.unit_label FROM inventory_stock_log l " +
+        "LEFT JOIN inventory_items i ON i.id = l.item_id " + where +
+        " ORDER BY l.created_at DESC LIMIT 500",
+        params
+      );
+    }).then(function(rows){
+      if(rows.length === 0){
+        list.innerHTML = '<div class="empty-state">No stock movements match this filter.</div>';
+        return;
+      }
+      list.innerHTML = rows.map(function(r){
+        var isIn = r.change_qty > 0;
+        return '<div class="item-row"><div><div class="item-name">' + escapeHtml(r.item_name || "(deleted ingredient)") + '</div>' +
+          '<div class="item-cat">' + new Date(r.created_at).toLocaleString() + " · " + stockLogReasonLabel(r.reason) +
+          (r.notes ? " · " + escapeHtml(r.notes) : "") + '</div></div>' +
+          '<div style="font-weight:700; color:' + (isIn ? "var(--primary)" : "var(--danger)") + ';">' +
+          (isIn ? "+" : "") + r.change_qty + " " + escapeHtml(r.unit_label || "") + '</div></div>';
+      }).join("");
+    }).catch(function(err){
+      console.error("Loading stock movement log failed", err);
+      list.innerHTML = '<div class="empty-state">Could not load the movement log -- try again.</div>';
+    });
+  }
+  document.getElementById("btnLoadStockLog").addEventListener("click", loadStockMovementLog);
+
+  function renderInventoryScreen(){
+    populateInvUnitLabelSelect();
+    renderInvItemsList();
+    populateInvItemSelect("invPurchaseItem");
+    populateInvItemSelect("invWastageItem");
+    populateInvLogItemFilter();
+    renderLowStockList();
+    renderValuationReport();
+    var todayStr = new Date().toISOString().slice(0, 10);
+    var purchaseDateEl = document.getElementById("invPurchaseDate");
+    if(!purchaseDateEl.value) purchaseDateEl.value = todayStr;
+    var wastageDateEl = document.getElementById("invWastageDate");
+    if(!wastageDateEl.value) wastageDateEl.value = todayStr;
   }
 
   /* ================= BILLING ================= */
@@ -7990,6 +8856,19 @@ var qrcode = function() {
         existingBill.isCredit = !order.splitEnabled && order.paymentMode === "Credit";
         if(existingBill.isCredit && !wasCredit) existingBill.creditPaid = 0;
         if(!existingBill.isCredit) delete existingBill.creditPaid;
+
+        // Recipe-based auto-deduction: undo whatever the bill's OLD item
+        // list had already deducted, then deduct for the NEW item list --
+        // net effect on current_stock is the same as diffing the two lists
+        // item-by-item, but two plain ledger entries (a "reversal" then a
+        // "sale") are simpler to reason about later than one merged delta,
+        // and this has to happen before existingBill.items is overwritten
+        // below since that's the only copy of the pre-edit item list.
+        var oldConsumption = computeIngredientConsumption(existingBill.items);
+        var newConsumption = computeIngredientConsumption(itemsSnapshot);
+        reverseIngredientConsumption(oldConsumption, existingBill.id);
+        applyIngredientConsumption(newConsumption, "sale", existingBill.id);
+
         existingBill.items = itemsSnapshot;
         existingBill.subtotal = t.subtotal;
         existingBill.discountAmount = t.discountAmount;
@@ -8054,6 +8933,12 @@ var qrcode = function() {
     };
     data.bills.push(bill);
     data.business.dailySeq += 1;
+
+    // Recipe-based auto-deduction: mutate ingredient stock in-memory right
+    // now, so the saveData() call right below picks it up in the same
+    // resync as the bill itself; the append-only ledger insert for this
+    // is fired separately (see applyIngredientConsumption above).
+    applyIngredientConsumption(computeIngredientConsumption(itemsSnapshot), "sale", bill.id);
 
     var finishedOrderId = order.id;
     saveData();
@@ -8218,6 +9103,11 @@ var qrcode = function() {
               deletedAt: new Date().toISOString()
             });
             data.deletedBillsLog.push(deletedEntry);
+
+            // Recipe-based auto-deduction: this bill's items already
+            // deducted stock when it was saved (and possibly re-deducted
+            // on each edit) -- undo that now that the bill itself is gone.
+            reverseIngredientConsumption(computeIngredientConsumption(b.items), b.id);
 
             data.bills = data.bills.filter(function(x){ return x.id !== b.id; });
 
@@ -10238,16 +11128,37 @@ var qrcode = function() {
   // reminder banner know to stop nagging. Shared by the normal Export
   // button and the reminder banner's own "Export Now" shortcut.
   function exportBackupNow(){
-    var blob = new Blob([JSON.stringify(data, null, 2)], {type: "application/json"});
-    var url = URL.createObjectURL(blob);
-    var a = document.createElement("a");
-    a.href = url;
-    a.download = "billing-backup-" + new Date().toISOString().slice(0,10) + ".json";
-    a.click();
-    URL.revokeObjectURL(url);
-    setLastExportAt(Date.now());
-    updateLastExportStatusText();
-    hideBackupReminder();
+    // inventory_purchases and inventory_stock_log are append-only ledgers,
+    // deliberately kept OUT of the in-memory `data` blob (see the note at
+    // the top of migrations/0002_inventory.sql) -- so a backup has to
+    // query them fresh at export time instead of just serializing `data`,
+    // or restoring this backup later would silently lose every purchase/
+    // wastage/sale-deduction ever logged even though inventory_items
+    // itself (which IS in the blob) would come back fine.
+    getDb().then(function(db){
+      return Promise.all([
+        db.select("SELECT * FROM inventory_purchases"),
+        db.select("SELECT * FROM inventory_stock_log")
+      ]);
+    }).then(function(results){
+      var exportObj = Object.assign({}, data, {
+        inventoryPurchases: results[0],
+        inventoryStockLog: results[1]
+      });
+      var blob = new Blob([JSON.stringify(exportObj, null, 2)], {type: "application/json"});
+      var url = URL.createObjectURL(blob);
+      var a = document.createElement("a");
+      a.href = url;
+      a.download = "billing-backup-" + new Date().toISOString().slice(0,10) + ".json";
+      a.click();
+      URL.revokeObjectURL(url);
+      setLastExportAt(Date.now());
+      updateLastExportStatusText();
+      hideBackupReminder();
+    }).catch(function(err){
+      console.error("Backup export failed", err);
+      showToast("Backup export failed -- try again");
+    });
   }
 
   function updateLastExportStatusText(){
