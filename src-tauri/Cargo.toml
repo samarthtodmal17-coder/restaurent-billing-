@@ -1,6 +1,6 @@
 [package]
 name = "restaurant-billing"
-version = "0.1.19"
+version = "0.1.20"
 description = "Restaurant billing POS - Tauri desktop shell (Phase 1: SQLite storage)"
 edition = "2021"
 

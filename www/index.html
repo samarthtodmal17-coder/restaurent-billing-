@@ -161,6 +161,16 @@
     background:rgba(255,255,255,0.08);
     font-weight:700;
   }
+  nav.tabs button:hover{ background:rgba(255,255,255,0.06); color:#fff; }
+  nav.tabs button:focus-visible{
+    outline:2px solid var(--accent-gold);
+    outline-offset:-2px;
+  }
+  /* Each tab's icon sits on its own line above the label on narrow
+     screens (nav-icon span injected by JS, see renderNavIcons()) so a
+     7-tab bar reads as a compact icon+label stack instead of squeezing
+     everything onto one cramped line. */
+  nav.tabs .nav-icon{ display:block; font-size:15px; margin-bottom:2px; }
   .tab-badge{
     display:inline-block;
     background:var(--accent-gold);
@@ -1021,6 +1031,11 @@
   @media (max-width:480px){
     nav.tabs button{font-size:12px; padding:10px 6px;}
     .card{padding:12px;}
+    /* Header runs out of room fast once the user badge joins the date +
+       theme toggle on a phone-width screen -- the date is the least
+       essential of the three, so it's the one that goes first. */
+    header.appbar #headerDate{display:none;}
+    .current-user-badge{font-size:11px; padding:3px 8px;}
   }
 
   /* Access lock screen */
@@ -1038,6 +1053,18 @@
   }
   .lock-screen.show{display:flex;}
   .lock-screen .card{max-width:320px; width:100%;}
+
+  /* ---- Owner/Staff login badge in the header ---- */
+  .current-user-badge{
+    color:#dff2ea;
+    font-size:12px;
+    padding:4px 10px;
+    border-radius:12px;
+    background:rgba(255,255,255,0.14);
+    cursor:pointer;
+    white-space:nowrap;
+  }
+  .current-user-badge:hover{ background:rgba(255,255,255,0.22); }
 
   /* ---- Vendor attribution -- for the restaurant owner (Manokshmi's own
      customer) to see inside the app itself, not for their diners: never
@@ -1683,6 +1710,17 @@
   <div class="vendor-watermark">Product of Manokshmi Technologies</div>
 </div>
 
+<div id="staffLoginScreen" class="lock-screen">
+  <div class="card">
+    <h2>Who's Working the Till?</h2>
+    <p class="muted">Enter your PIN to continue.</p>
+    <input type="password" inputmode="numeric" id="staffLoginPinInput" placeholder="PIN" autocomplete="off" style="font-size:22px; text-align:center; letter-spacing:6px;">
+    <button class="btn" id="btnStaffLogin" style="margin-top:12px; width:100%;">Log In</button>
+    <p class="muted" id="staffLoginError" style="color:var(--danger); display:none; margin-top:8px;">Incorrect PIN. Please try again.</p>
+  </div>
+  <div class="vendor-watermark">Product of Manokshmi Technologies</div>
+</div>
+
 <header class="appbar">
   <div class="brand">
     <img id="headerLogo" class="logo-sm" src="" style="display:none;">
@@ -1690,18 +1728,19 @@
   </div>
   <div style="display:flex; align-items:center; gap:10px;">
     <span class="muted" style="color:#dff2ea; font-size:12px;" id="headerDate"></span>
+    <span class="current-user-badge" id="currentUserBadge" style="display:none;" title="Click to switch user" role="button" tabindex="0"></span>
     <button type="button" id="themeToggleBtn" class="theme-toggle-btn" title="Switch light/dark theme" aria-label="Toggle dark mode">🌙</button>
   </div>
 </header>
 
 <nav class="tabs">
-  <button class="tab-btn active" data-tab="billing">Billing</button>
-  <button class="tab-btn" data-tab="menu">Menu &amp; Rates</button>
-  <button class="tab-btn" data-tab="inventory">Inventory</button>
-  <button class="tab-btn" data-tab="history">Bill History</button>
-  <button class="tab-btn" data-tab="credit">Credit Payments <span id="creditTabBadge" class="tab-badge" style="display:none;"></span></button>
-  <button class="tab-btn" data-tab="dashboard">Dashboard</button>
-  <button class="tab-btn" data-tab="settings">Settings</button>
+  <button class="tab-btn active" data-tab="billing"><span class="nav-icon">🧾</span>Billing</button>
+  <button class="tab-btn" data-tab="menu"><span class="nav-icon">🍽️</span>Menu &amp; Rates</button>
+  <button class="tab-btn" data-tab="inventory"><span class="nav-icon">📦</span>Inventory</button>
+  <button class="tab-btn" data-tab="history"><span class="nav-icon">🕘</span>Bill History</button>
+  <button class="tab-btn" data-tab="credit"><span class="nav-icon">💳</span>Credit Payments <span id="creditTabBadge" class="tab-badge" style="display:none;"></span></button>
+  <button class="tab-btn" data-tab="dashboard"><span class="nav-icon">📊</span>Dashboard</button>
+  <button class="tab-btn" data-tab="settings"><span class="nav-icon">⚙️</span>Settings</button>
 </nav>
 
 <!-- Shown above whichever screen is active (not tied to any one tab) when
@@ -2368,6 +2407,31 @@
       </div>
       <input type="file" id="importFile" accept=".json" style="display:none;">
       <button class="btn danger" id="btnResetData" style="margin-top:10px;">Erase All Data</button>
+    </div>
+
+    <div class="card settings-full" id="cardStaffAccounts">
+      <h2>👤 Owner &amp; Staff Accounts</h2>
+      <p class="muted">Give each person their own name and PIN. Once at least one account exists, everyone has to log in with their PIN when the app starts. Staff accounts can't open Settings, the Dashboard, or Inventory's purchase/cost screens -- and every bill edit or deletion gets stamped with whoever was logged in at the time.</p>
+      <div id="staffAccountsList" style="margin-top:10px;"></div>
+
+      <div class="row" style="margin-top:12px;">
+        <div>
+          <label>Name</label>
+          <input type="text" id="newStaffName" placeholder="e.g. Ramesh">
+        </div>
+        <div>
+          <label>PIN (4+ digits)</label>
+          <input type="password" inputmode="numeric" id="newStaffPin" placeholder="e.g. 4821">
+        </div>
+        <div>
+          <label>Role</label>
+          <select id="newStaffRole">
+            <option value="staff">Staff</option>
+            <option value="owner">Owner</option>
+          </select>
+        </div>
+      </div>
+      <button class="btn small" id="btnAddStaffAccount" style="margin-top:8px;">Add Account</button>
     </div>
 
     <div class="vendor-watermark" style="margin:4px 0 12px;">Product of Manokshmi Technologies</div>
@@ -4728,7 +4792,7 @@ var qrcode = function() {
      ============================================================ */
   var LICENSE_API_BASE = "https://licensing-platform.pages.dev"; // set to the real deployed licensing-platform URL
   var PRODUCT_ID = "restaurant-pos";
-  var APP_VERSION = "0.1.19";
+  var APP_VERSION = "0.1.20";
   var DB_VERSION = "1";
   var LICENSED_TO = "";
 
@@ -4785,7 +4849,11 @@ var qrcode = function() {
     // the stock movement ledger are intentionally NOT here -- they're
     // append-only tables read on demand, never loaded into this blob (see
     // migrations/0002_inventory.sql).
-    inventoryItems: []
+    inventoryItems: [],
+    // Owner/Staff named accounts (see migrations/0003_staff_accounts.sql).
+    // Empty by default -- the app runs with no login required until the
+    // owner actually sets up at least one account in Settings.
+    staffAccounts: []
   };
 
   // In-memory copy of all app data. Populated once loadData()'s promise
@@ -4833,6 +4901,10 @@ var qrcode = function() {
     // Recipes live nested under each menu item (item.recipe), same as
     // item.variants, so they need no separate default here.
     parsed.inventoryItems = parsed.inventoryItems || [];
+    // Owner/Staff named accounts. Empty means the login system is simply
+    // not set up yet on this device -- see maybeShowLoginScreen(), which
+    // treats an empty list as "no login required" rather than a lockout.
+    parsed.staffAccounts = parsed.staffAccounts || [];
     return parsed;
   }
 
@@ -4957,7 +5029,10 @@ var qrcode = function() {
         // append-only ledgers read on demand by their own report screens
         // (see the note at the top of migrations/0002_inventory.sql).
         db.select("SELECT * FROM inventory_items WHERE archived = 0"),
-        db.select("SELECT * FROM menu_item_recipes ORDER BY sort_order, rowid")
+        db.select("SELECT * FROM menu_item_recipes ORDER BY sort_order, rowid"),
+        // Owner/Staff named accounts -- another small blob-backed table,
+        // loaded fully just like categories/tables.
+        db.select("SELECT * FROM staff_accounts ORDER BY created_at")
       ]).then(function(results){
         var biz = results[0][0] || {};
         var categoryRows = results[1];
@@ -4976,6 +5051,7 @@ var qrcode = function() {
         var counterRows = results[14];
         var invItemRows = results[15];
         var recipeRows = results[16];
+        var staffAccountRows = results[17];
 
         var business = {
           name: biz.name, logo: biz.logo, address: biz.address, phone: biz.phone,
@@ -5055,6 +5131,7 @@ var qrcode = function() {
         editHistRows.forEach(function(h){
           (historyByBill[h.bill_id] = historyByBill[h.bill_id] || []).push({
             editedAt: h.edited_at,
+            editedBy: h.edited_by || "",
             previousItems: h.previous_items ? JSON.parse(h.previous_items) : [],
             previousTotal: h.previous_total,
             previousDiscountAmount: h.previous_discount_amount,
@@ -5077,6 +5154,7 @@ var qrcode = function() {
           };
           if(b.is_credit) bill.creditPaid = b.credit_paid || 0;
           if(b.edited_at) bill.editedAt = b.edited_at;
+          if(b.edited_by) bill.editedBy = b.edited_by;
           if(historyByBill[b.id]) bill.editHistory = historyByBill[b.id];
           return bill;
         });
@@ -5098,11 +5176,15 @@ var qrcode = function() {
 
         var nextItemCode = (counterRows[0] && counterRows[0].value) || 101;
 
+        var staffAccounts = staffAccountRows.map(function(r){
+          return {id: r.id, name: r.name, pin: r.pin, role: r.role, createdAt: r.created_at};
+        });
+
         return mergeWithDefaults({
           business: business, categories: categories, subcategories: subcategories,
           menuItems: menuItems, tables: tables, openOrders: openOrders, bills: bills,
           deletedBillsLog: deletedBillsLog, creditPayments: creditPayments, nextItemCode: nextItemCode,
-          inventoryItems: inventoryItems
+          inventoryItems: inventoryItems, staffAccounts: staffAccounts
         });
       });
     }).catch(function(err){
@@ -5210,6 +5292,11 @@ var qrcode = function() {
       .then(function(){ return runSequential(data.tables, function(t, i){
         return db.execute("INSERT INTO tables (id, name, sort_order) VALUES ($1,$2,$3)", [t.id, t.name, i]);
       }); })
+      .then(function(){ return db.execute("DELETE FROM staff_accounts"); })
+      .then(function(){ return runSequential(data.staffAccounts || [], function(s){
+        return db.execute("INSERT INTO staff_accounts (id, name, pin, role, created_at) VALUES ($1,$2,$3,$4,$5)",
+          [s.id, s.name, s.pin, s.role || "staff", s.createdAt || new Date().toISOString()]);
+      }); })
       // Inventory & Stock Management: menu_item_recipes is deleted first
       // since it has FK references into both menu_items and
       // inventory_items -- then inventory_items itself is rewritten before
@@ -5272,23 +5359,24 @@ var qrcode = function() {
         return db.execute(
           "INSERT INTO bills (id, bill_no, date, table_id, table_name, customer, customer_phone, payment_mode, " +
           "split_payments, is_credit, credit_paid, subtotal, discount_amount, discount_value, discount_type, tax_label, " +
-          "tax_percent, tax, tax_by_rate, service_charge_percent, service, is_parcel, packing_charge, total, currency, edited_at) " +
-          "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26)",
+          "tax_percent, tax, tax_by_rate, service_charge_percent, service, is_parcel, packing_charge, total, currency, edited_at, edited_by) " +
+          "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27)",
           [b.id, b.billNo, b.date, b.tableId || null, b.table || null, b.customer || null, b.customerPhone || null,
            b.paymentMode || null, b.splitPayments ? JSON.stringify(b.splitPayments) : null, b.isCredit ? 1 : 0,
            b.isCredit ? (b.creditPaid || 0) : null, b.subtotal || 0, b.discountAmount || 0, b.discountValue || 0,
            b.discountType || "amount", b.taxLabel || null, b.taxPercent != null ? b.taxPercent : null, b.tax || 0,
            b.taxByRate ? JSON.stringify(b.taxByRate) : null, b.serviceChargePercent != null ? b.serviceChargePercent : null,
-           b.service || 0, b.isParcel ? 1 : 0, b.packingCharge || 0, b.total || 0, b.currency || null, b.editedAt || null]
+           b.service || 0, b.isParcel ? 1 : 0, b.packingCharge || 0, b.total || 0, b.currency || null, b.editedAt || null,
+           b.editedBy || null]
         ).then(function(){
           return runSequential(b.items || [], function(it, i){ return insertLineItem(db, "bill_items", "bill_id", b.id, it, i); });
         }).then(function(){
           if(!b.editHistory || !b.editHistory.length) return;
           return runSequential(b.editHistory, function(h){
             return db.execute(
-              "INSERT INTO bill_edit_history (bill_id, edited_at, previous_items, previous_total, previous_discount_amount, previous_table, previous_customer, previous_payment_mode) " +
-              "VALUES ($1,$2,$3,$4,$5,$6,$7,$8)",
-              [b.id, h.editedAt, JSON.stringify(h.previousItems || []), h.previousTotal || 0, h.previousDiscountAmount || 0,
+              "INSERT INTO bill_edit_history (bill_id, edited_at, edited_by, previous_items, previous_total, previous_discount_amount, previous_table, previous_customer, previous_payment_mode) " +
+              "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)",
+              [b.id, h.editedAt, h.editedBy || null, JSON.stringify(h.previousItems || []), h.previousTotal || 0, h.previousDiscountAmount || 0,
                h.previousTable || null, h.previousCustomer || null, h.previousPaymentMode || null]
             );
           });
@@ -5511,7 +5599,8 @@ var qrcode = function() {
     "screen-settings-card-1": true,  // Billing Configuration
     "screen-settings-card-2": true,  // Printer Setup
     "screen-settings-card-3": true,  // UPI Payment QR
-    "screen-settings-card-5": true   // Data & Backup
+    "screen-settings-card-5": true,  // Data & Backup
+    "cardStaffAccounts": true        // Owner & Staff Accounts (has its own id, unaffected by card-order renumbering)
   };
 
   function saveCollapsedCardsState(){
@@ -5604,6 +5693,13 @@ var qrcode = function() {
   // Pulled out so other actions (like "Edit" on a past bill) can jump to a
   // tab programmatically, not just via a direct button click.
   function switchToTab(tabName){
+    // Owner-only tabs stay blocked even if reached some way other than
+    // clicking the (already-hidden-for-Staff) nav button -- see
+    // applyRolePermissions() above.
+    if((tabName === "settings" || tabName === "dashboard") && !isOwnerUser()){
+      showToast("Only the Owner can open this");
+      return;
+    }
     tabButtons.forEach(function(b){ b.classList.remove("active"); });
     var targetBtn = Array.prototype.filter.call(tabButtons, function(b){ return b.dataset.tab === tabName; })[0];
     if(targetBtn) targetBtn.classList.add("active");
@@ -5642,6 +5738,20 @@ var qrcode = function() {
       img.style.display = "none";
     }
     document.getElementById("headerDate").textContent = new Date().toLocaleDateString();
+
+    // Owner/Staff login badge -- only shown once the login system is
+    // actually set up (data.staffAccounts non-empty). See the
+    // "OWNER/STAFF ACCOUNTS & LOGIN" section below for currentUser.
+    var userBadge = document.getElementById("currentUserBadge");
+    if(userBadge){
+      if(data.staffAccounts && data.staffAccounts.length){
+        var roleLabel = currentUser ? (currentUser.role === "owner" ? "Owner" : "Staff") : "";
+        userBadge.textContent = currentUser ? ("👤 " + currentUser.name + " (" + roleLabel + ") · Switch User") : "👤 Switch User";
+        userBadge.style.display = "inline-block";
+      } else {
+        userBadge.style.display = "none";
+      }
+    }
   }
 
   /* ================= SETTINGS ================= */
@@ -5674,6 +5784,8 @@ var qrcode = function() {
     } else {
       preview.style.display = "none";
     }
+
+    renderStaffAccountsList();
   }
 
   document.getElementById("receiptPaperWidth").addEventListener("change", function(){
@@ -5789,6 +5901,141 @@ var qrcode = function() {
       renderHistory();
       showToast("All data erased");
     }
+  });
+
+  /* ================= OWNER/STAFF ACCOUNTS: SETTINGS UI =================
+     data.staffAccounts CRUD -- add/edit/delete go through it + saveData(),
+     same as categories. See the "OWNER/STAFF ACCOUNTS & LOGIN" section
+     (near startApp()) for the login screen and role gating this manages. */
+  var editingStaffAccountId = null;
+
+  function isLastRemainingOwner(account){
+    if(account.role !== "owner") return false;
+    return data.staffAccounts.filter(function(a){ return a.role === "owner"; }).length <= 1;
+  }
+
+  function renderStaffAccountsList(){
+    var list = document.getElementById("staffAccountsList");
+    if(!list) return;
+    list.innerHTML = "";
+    if(data.staffAccounts.length === 0){
+      list.innerHTML = '<div class="empty-state">No accounts yet -- everyone currently has full access. Add at least one Owner account below to turn login on.</div>';
+      return;
+    }
+    data.staffAccounts.slice().sort(function(a, b){
+      if(a.role !== b.role) return a.role === "owner" ? -1 : 1;
+      return a.name.localeCompare(b.name);
+    }).forEach(function(acct){
+      var row = document.createElement("div");
+      row.className = "item-row";
+      row.style.flexWrap = "wrap";
+      row.innerHTML =
+        '<div><div class="item-name">' + escapeHtml(acct.name) +
+        ' <span class="credit-badge" style="background:' + (acct.role === "owner" ? "var(--primary)" : "var(--muted)") + ';">' +
+        (acct.role === "owner" ? "OWNER" : "STAFF") + '</span>' +
+        (currentUser && currentUser.id === acct.id ? ' <span class="muted">(you)</span>' : '') + '</div>' +
+        '<div class="item-cat">PIN: ' + "•".repeat(String(acct.pin || "").length) + '</div></div>';
+
+      var actionsWrap = document.createElement("div");
+      actionsWrap.style.display = "flex";
+      actionsWrap.style.gap = "6px";
+
+      var editBtn = document.createElement("button");
+      editBtn.className = "btn small secondary";
+      editBtn.textContent = "Edit";
+      editBtn.addEventListener("click", function(){
+        editingStaffAccountId = (editingStaffAccountId === acct.id) ? null : acct.id;
+        renderStaffAccountsList();
+      });
+
+      var delBtn = document.createElement("button");
+      delBtn.className = "btn small danger";
+      delBtn.textContent = "Delete";
+      delBtn.addEventListener("click", function(){
+        if(isLastRemainingOwner(acct)){
+          showToast("Can't delete the only Owner account -- add another Owner first");
+          return;
+        }
+        if(!confirm('Remove "' + acct.name + '"\'s account? They will no longer be able to log in.')) return;
+        data.staffAccounts = data.staffAccounts.filter(function(a){ return a.id !== acct.id; });
+        if(currentUser && currentUser.id === acct.id) currentUser = null;
+        saveData();
+        renderStaffAccountsList();
+        applyRolePermissions();
+      });
+
+      actionsWrap.appendChild(editBtn);
+      actionsWrap.appendChild(delBtn);
+      row.appendChild(actionsWrap);
+
+      if(editingStaffAccountId === acct.id){
+        var editBox = document.createElement("div");
+        editBox.className = "edit-box";
+        editBox.style.width = "100%";
+        editBox.innerHTML =
+          '<label>Name</label><input type="text" class="staff-edit-name" value="' + escapeHtml(acct.name) + '">' +
+          '<label>PIN (4+ digits)</label><input type="password" inputmode="numeric" class="staff-edit-pin" value="' + escapeHtml(acct.pin) + '">' +
+          '<label>Role</label><select class="staff-edit-role">' +
+          '<option value="staff"' + (acct.role !== "owner" ? " selected" : "") + '>Staff</option>' +
+          '<option value="owner"' + (acct.role === "owner" ? " selected" : "") + '>Owner</option>' +
+          '</select>' +
+          '<button class="btn small" style="margin-top:8px;">Save Changes</button>';
+        var nameInput = editBox.querySelector(".staff-edit-name");
+        var pinInput = editBox.querySelector(".staff-edit-pin");
+        var roleSelect = editBox.querySelector(".staff-edit-role");
+        editBox.querySelector("button").addEventListener("click", function(){
+          var newName = nameInput.value.trim();
+          var newPin = pinInput.value.trim();
+          var newRole = roleSelect.value;
+          if(!newName){ showToast("Name can't be empty"); return; }
+          if(newPin.length < 4){ showToast("PIN must be at least 4 digits"); return; }
+          if(data.staffAccounts.some(function(a){ return a.id !== acct.id && a.pin === newPin; })){
+            showToast("That PIN is already used by another account -- pick a different one");
+            return;
+          }
+          if(acct.role === "owner" && newRole !== "owner" && isLastRemainingOwner(acct)){
+            showToast("Can't demote the only Owner account -- add another Owner first");
+            return;
+          }
+          acct.name = newName;
+          acct.pin = newPin;
+          acct.role = newRole;
+          if(currentUser && currentUser.id === acct.id){ currentUser.name = newName; currentUser.role = newRole; }
+          editingStaffAccountId = null;
+          saveData();
+          renderStaffAccountsList();
+          applyRolePermissions();
+          showToast("Account updated");
+        });
+        row.appendChild(editBox);
+      }
+
+      list.appendChild(row);
+    });
+  }
+
+  document.getElementById("btnAddStaffAccount").addEventListener("click", function(){
+    var name = document.getElementById("newStaffName").value.trim();
+    var pin = document.getElementById("newStaffPin").value.trim();
+    var role = document.getElementById("newStaffRole").value;
+    if(!name){ showToast("Enter a name first"); return; }
+    if(pin.length < 4){ showToast("PIN must be at least 4 digits"); return; }
+    if(data.staffAccounts.some(function(a){ return a.pin === pin; })){
+      showToast("That PIN is already used by another account -- pick a different one");
+      return;
+    }
+    data.staffAccounts.push({id: uid("staff"), name: name, pin: pin, role: role, createdAt: new Date().toISOString()});
+    saveData();
+    document.getElementById("newStaffName").value = "";
+    document.getElementById("newStaffPin").value = "";
+    document.getElementById("newStaffRole").value = "staff";
+    renderStaffAccountsList();
+    // renderHeader() shows/hides the "Switch User" badge the moment the
+    // first account is created -- but doesn't touch currentUser/role
+    // enforcement itself, since loginRequiredThisSession only gets set at
+    // the next app launch (see the big comment on that variable above).
+    renderHeader();
+    showToast("Account added");
   });
 
   /* ================= MENU & RATES ================= */
@@ -7655,7 +7902,9 @@ var qrcode = function() {
         '<div class="item-cat">' + (item.category ? escapeHtml(item.category) + " · " : "") +
         "Stock: " + item.currentStock + " " + escapeHtml(item.unitLabel) +
         (item.reorderThreshold ? " · Alert below " + item.reorderThreshold + " " + escapeHtml(item.unitLabel) : "") +
-        (item.lastPurchaseCost ? " · Last cost " + fmt(item.lastPurchaseCost) + "/" + escapeHtml(item.unitLabel) : "") +
+        // Cost is Owner-only (Staff can see stock levels, not what things
+        // cost) -- see applyInventoryRoleVisibility() near startApp().
+        (item.lastPurchaseCost && isOwnerUser() ? " · Last cost " + fmt(item.lastPurchaseCost) + "/" + escapeHtml(item.unitLabel) : "") +
         '</div></div>';
 
       var actionsWrap = document.createElement("div");
@@ -7918,8 +8167,24 @@ var qrcode = function() {
   }
   document.getElementById("btnLoadStockLog").addEventListener("click", loadStockMovementLog);
 
+  // Owner-only: adding ingredients, recording purchases, and the stock
+  // valuation report all involve cost -- Staff keep Low-Stock Alerts,
+  // Wastage entry, the Stock Movement Log, and a cost-free ingredient
+  // list (see the isOwnerUser() check inside renderInvItemsList() above).
+  // Called both from applyRolePermissions() (login/Switch User) and from
+  // renderInventoryScreen() itself, so a role change while this tab is
+  // already open takes effect the moment it happens.
+  function applyInventoryRoleVisibility(){
+    var owner = isOwnerUser();
+    ["cardInventoryAddItem", "cardInventoryPurchase", "cardInventoryValuation"].forEach(function(id){
+      var card = document.getElementById(id);
+      if(card) card.style.display = owner ? "" : "none";
+    });
+  }
+
   function renderInventoryScreen(){
     populateInvUnitLabelSelect();
+    applyInventoryRoleVisibility();
     renderInvItemsList();
     populateInvItemSelect("invPurchaseItem");
     populateInvItemSelect("invWastageItem");
@@ -8839,6 +9104,7 @@ var qrcode = function() {
         existingBill.editHistory = existingBill.editHistory || [];
         existingBill.editHistory.push({
           editedAt: new Date().toISOString(),
+          editedBy: currentUser ? currentUser.name : "",
           previousItems: existingBill.items,
           previousTotal: existingBill.total,
           previousDiscountAmount: existingBill.discountAmount,
@@ -8883,6 +9149,7 @@ var qrcode = function() {
         existingBill.packingCharge = t.packingCharge;
         existingBill.total = t.total;
         existingBill.editedAt = new Date().toISOString();
+        existingBill.editedBy = currentUser ? currentUser.name : "";
 
         var finishedEditOrderId = order.id;
         saveData();
@@ -9058,7 +9325,8 @@ var qrcode = function() {
         }
         var wasEdited = !!(b.editHistory && b.editHistory.length);
         var editedBadge = wasEdited
-          ? ' <span class="credit-badge due" title="Changed after it was first saved">✏️ EDITED ×' + b.editHistory.length + '</span>'
+          ? ' <span class="credit-badge due" title="Changed after it was first saved">✏️ EDITED ×' + b.editHistory.length +
+            (b.editedBy ? " by " + escapeHtml(b.editedBy) : "") + '</span>'
           : "";
         row.innerHTML = '<div><div class="item-name">' + escapeHtml(b.billNo) + creditBadge + editedBadge + '</div>' +
           '<div class="item-cat">' + timeStr + (b.table ? " · " + escapeHtml(b.table) : "") + (b.customer ? " · " + escapeHtml(b.customer) : "") + (b.paymentMode ? " · " + escapeHtml(b.paymentMode) : "") + '</div></div>' +
@@ -9100,7 +9368,8 @@ var qrcode = function() {
             var deletedEntry = Object.assign({}, b, {
               id: uid("del"),
               originalBillId: b.id,
-              deletedAt: new Date().toISOString()
+              deletedAt: new Date().toISOString(),
+              deletedBy: currentUser ? currentUser.name : ""
             });
             data.deletedBillsLog.push(deletedEntry);
 
@@ -9182,7 +9451,8 @@ var qrcode = function() {
           drow.className = "item-row deleted-row";
           var dTimeStr = new Date(d.deletedAt).toLocaleTimeString([], {hour:"2-digit", minute:"2-digit"});
           drow.innerHTML = '<div><div class="item-name">' + escapeHtml(d.billNo) + '</div>' +
-            '<div class="item-cat">Deleted at ' + dTimeStr + (d.table ? " · " + escapeHtml(d.table) : "") + (d.customer ? " · " + escapeHtml(d.customer) : "") + '</div></div>' +
+            '<div class="item-cat">Deleted at ' + dTimeStr + (d.deletedBy ? " by " + escapeHtml(d.deletedBy) : "") +
+            (d.table ? " · " + escapeHtml(d.table) : "") + (d.customer ? " · " + escapeHtml(d.customer) : "") + '</div></div>' +
             '<div style="font-weight:700;">' + fmt(d.total) + '</div>';
           var viewDeletedBtn = document.createElement("button");
           viewDeletedBtn.className = "btn small secondary";
@@ -9272,7 +9542,11 @@ var qrcode = function() {
     for(var i = 1; i < snapshots.length; i++){
       var before = snapshots[i - 1];
       var after = snapshots[i];
-      lines.push((i) + ") " + new Date(after.at).toLocaleString());
+      // bill.editHistory[i-1] is the record pushed WHILE this exact edit
+      // was being made, so its editedBy is who performed this transition
+      // (see the big comment above describeBillEdits for the index math).
+      var editorName = (bill.editHistory[i - 1] && bill.editHistory[i - 1].editedBy) || "";
+      lines.push((i) + ") " + new Date(after.at).toLocaleString() + (editorName ? " -- by " + editorName : ""));
       var changed = false;
       var itemDiff = diffBillItems(before.items, after.items);
       if(itemDiff.added.length){ lines.push("   + Added: " + itemDiff.added.join(", ")); changed = true; }
@@ -10987,9 +11261,122 @@ var qrcode = function() {
     return isLicensed();
   }
 
+  /* ================= OWNER/STAFF ACCOUNTS & LOGIN =================
+     data.staffAccounts (see migrations/0003_staff_accounts.sql) is a
+     small blob-backed table -- add/edit/delete go through it + saveData(),
+     same as categories. PINs are stored plain (see the migration's own
+     comment for why that's an acceptable tradeoff here: this is a
+     shop-floor "who's using the till" gate, not a security boundary).
+
+     loginRequiredThisSession is decided ONCE, at boot, from whether any
+     accounts existed at that moment -- not re-checked live. This matters
+     for the very first time an Owner sets up accounts: at the moment
+     Settings loaded, staffAccounts was empty, so login wasn't required
+     for the rest of THIS session no matter how many accounts get added
+     in the next few minutes while setting things up. The very next app
+     launch, staffAccounts is non-empty, so login is required from then
+     on, as normal. "Switch User" (the header badge) is the one place
+     that explicitly turns enforcement on mid-session, since choosing to
+     switch is itself a deliberate signal that roles should now apply. */
+  var currentUser = null; // {id, name, role} once logged in
+  var loginRequiredThisSession = false;
+  var appStartedOnce = false;
+
+  function findStaffAccountByPin(pin){
+    return data.staffAccounts.find(function(a){ return a.pin === pin; }) || null;
+  }
+
+  // No accounts set up yet (login system not in use) -> treat everyone
+  // as Owner, matching pre-login behavior exactly. Otherwise, only an
+  // actual logged-in Owner counts.
+  function isOwnerUser(){
+    if(!loginRequiredThisSession) return true;
+    return !!(currentUser && currentUser.role === "owner");
+  }
+
+  function showStaffLoginScreen(){
+    document.getElementById("staffLoginError").style.display = "none";
+    document.getElementById("staffLoginPinInput").value = "";
+    document.getElementById("staffLoginScreen").classList.add("show");
+    setTimeout(function(){ document.getElementById("staffLoginPinInput").focus(); }, 0);
+  }
+
+  function hideStaffLoginScreen(){
+    document.getElementById("staffLoginScreen").classList.remove("show");
+  }
+
+  document.getElementById("btnStaffLogin").addEventListener("click", function(){
+    var pin = document.getElementById("staffLoginPinInput").value.trim();
+    var errorEl = document.getElementById("staffLoginError");
+    if(!pin) return;
+    var account = findStaffAccountByPin(pin);
+    if(!account){
+      errorEl.textContent = "Incorrect PIN. Please try again.";
+      errorEl.style.display = "block";
+      document.getElementById("staffLoginPinInput").value = "";
+      document.getElementById("staffLoginPinInput").focus();
+      return;
+    }
+    currentUser = {id: account.id, name: account.name, role: account.role};
+    loginRequiredThisSession = true;
+    hideStaffLoginScreen();
+    if(!appStartedOnce){
+      startAppUnlocked();
+    } else {
+      applyRolePermissions();
+      showToast("Logged in as " + account.name);
+    }
+  });
+  document.getElementById("staffLoginPinInput").addEventListener("keydown", function(e){
+    if(e.key === "Enter") document.getElementById("btnStaffLogin").click();
+  });
+
+  document.getElementById("currentUserBadge").addEventListener("click", function(){
+    currentUser = null;
+    loginRequiredThisSession = true;
+    showStaffLoginScreen();
+  });
+  makeKeyboardClickable(document.getElementById("currentUserBadge"));
+
+  // Hides Owner-only screens/data from a logged-in Staff user (or from
+  // anyone, harmlessly, when login isn't set up -- isOwnerUser() already
+  // returns true in that case, so this is a no-op then). Called on every
+  // login/logout/Switch User, so role changes take effect immediately
+  // without needing an app restart.
+  function applyRolePermissions(){
+    var owner = isOwnerUser();
+    var settingsTab = document.querySelector('.tab-btn[data-tab="settings"]');
+    var dashboardTab = document.querySelector('.tab-btn[data-tab="dashboard"]');
+    if(settingsTab) settingsTab.style.display = owner ? "" : "none";
+    if(dashboardTab) dashboardTab.style.display = owner ? "" : "none";
+
+    // A Staff login landing on (or already sitting on, via Switch User)
+    // an Owner-only tab gets bounced back to Billing instead of being
+    // left looking at a screen they're not supposed to have open.
+    if(!owner){
+      var active = document.querySelector(".tab-btn.active");
+      if(active && (active.dataset.tab === "settings" || active.dataset.tab === "dashboard")){
+        switchToTab("billing");
+      }
+    }
+
+    applyInventoryRoleVisibility();
+    renderHeader();
+  }
+
   function startApp(){
     var rec = getStoredLicense();
     LICENSED_TO = (rec && rec.customerName) ? rec.customerName : "";
+    loginRequiredThisSession = !!(data.staffAccounts && data.staffAccounts.length);
+    if(loginRequiredThisSession){
+      showStaffLoginScreen();
+    } else {
+      startAppUnlocked();
+    }
+  }
+
+  function startAppUnlocked(){
+    appStartedOnce = true;
     ensureItemCodes();
     renderHeader();
     renderVariantRowsList();
@@ -10999,6 +11386,7 @@ var qrcode = function() {
     applyReceiptPrintStyle("receipt");
     updateLastExportStatusText();
     maybeShowBackupReminder();
+    applyRolePermissions();
     // Bill History defaults to Today (not All Dates) -- checking on
     // today's bills is the most common reason to open this screen, so it
     // should need zero taps. Tapping "All Dates" (or any other preset)
