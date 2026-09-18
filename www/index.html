@@ -1717,6 +1717,8 @@
     <input type="password" inputmode="numeric" id="staffLoginPinInput" placeholder="PIN" autocomplete="off" style="font-size:22px; text-align:center; letter-spacing:6px;">
     <button class="btn" id="btnStaffLogin" style="margin-top:12px; width:100%;">Log In</button>
     <p class="muted" id="staffLoginError" style="color:var(--danger); display:none; margin-top:8px;">Incorrect PIN. Please try again.</p>
+    <p class="muted" style="margin-top:14px; font-size:12px;">Staff who forgot their PIN: ask the Owner to reset it in Settings.</p>
+    <button class="btn small secondary" id="btnForgotStaffPin" type="button" style="margin-top:6px; width:100%;">Owner forgot PIN? Reset login here</button>
   </div>
   <div class="vendor-watermark">Product of Manokshmi Technologies</div>
 </div>
@@ -2067,6 +2069,28 @@
       <h2>Ingredients &amp; Consumables <span class="muted" id="invItemsCountBadge" style="font-weight:400;"></span></h2>
       <input type="text" id="invItemsSearch" placeholder="Search by name or category...">
       <div id="invItemsList" style="margin-top:10px;"></div>
+    </div>
+
+    <div class="card" id="cardInventoryAddStock">
+      <h2>➕ Add Stock (Quick)</h2>
+      <p class="muted">For topping up stock on the spot -- no supplier or cost needed, so this stays available to Staff too. Use "Record a Purchase" below instead when you want the cost tracked for reports.</p>
+      <div class="row">
+        <div>
+          <label>Item</label>
+          <select id="invAddStockItem"></select>
+        </div>
+        <div>
+          <label>Quantity to Add</label>
+          <input type="number" id="invAddStockQty" min="0" step="0.01" placeholder="0">
+        </div>
+        <div>
+          <label>Date</label>
+          <input type="date" id="invAddStockDate">
+        </div>
+      </div>
+      <label>Notes (optional)</label>
+      <input type="text" id="invAddStockNotes" placeholder="e.g. Received from kitchen store, count correction">
+      <button class="btn" id="btnAddStock" style="margin-top:12px;">Add Stock</button>
     </div>
 
     <div class="card" id="cardInventoryPurchase">
@@ -4792,7 +4816,7 @@ var qrcode = function() {
      ============================================================ */
   var LICENSE_API_BASE = "https://licensing-platform.pages.dev"; // set to the real deployed licensing-platform URL
   var PRODUCT_ID = "restaurant-pos";
-  var APP_VERSION = "0.1.20";
+  var APP_VERSION = "0.1.22";
   var DB_VERSION = "1";
   var LICENSED_TO = "";
 
@@ -5564,6 +5588,7 @@ var qrcode = function() {
     "cardMenuItems": true,          // Menu Items
     "cardInventoryAddItem": true,   // Add Ingredient / Consumable
     "cardInventoryItems": true,     // Ingredients & Consumables list
+    "cardInventoryAddStock": true,  // Add Stock (Quick)
     "cardInventoryPurchase": true,  // Record a Purchase
     "cardInventoryWastage": true,   // Log Wastage / Spoilage
     "cardInventoryLowStock": true,  // Low-Stock Alerts
@@ -6786,6 +6811,17 @@ var qrcode = function() {
 
       var topLine = document.createElement("div");
       topLine.className = "flex-between";
+      // These items carry a bigger action-button set (Sizes/Tax/KOT/Stock/
+      // Recipe/Photo/Delete, on top of the base Name/Code/Favorite/Move),
+      // and a photo thumbnail eats another ~40px of row width. Without
+      // wrapping, the buttons that don't fit just get sliced off by
+      // #menuManageList's overflow-x:hidden (added to stop the list itself
+      // from scrolling sideways -- see task #8/#450) instead of flowing to
+      // a second line. flex-wrap here lets topLine drop the name+photo onto
+      // its own line first, and flex-wrap on "actions" below lets the
+      // buttons themselves wrap once they no longer fit on one line.
+      topLine.style.flexWrap = "wrap";
+      topLine.style.rowGap = "6px";
       topLine.innerHTML = '<div class="item-name-row">' +
         (item.photo ? '<img src="' + item.photo + '" class="item-photo-thumb" alt="">' : '') +
         '<div class="item-name"><span class="item-code-badge">#' + escapeHtml(item.code || "?") + '</span>' + escapeHtml(item.name) +
@@ -6795,6 +6831,7 @@ var qrcode = function() {
       var actions = document.createElement("div");
       actions.style.display = "flex";
       actions.style.gap = "6px";
+      actions.style.flexWrap = "wrap";
 
       var editNameBtn = document.createElement("button");
       editNameBtn.className = "btn small secondary";
@@ -6913,6 +6950,13 @@ var qrcode = function() {
       var actions2 = document.createElement("div");
       actions2.style.display = "flex";
       actions2.style.gap = "6px";
+      // See the matching comment on "actions" above (hasVariants branch):
+      // without wrapping, this button set (up to ~12 buttons once Stock/
+      // Recipe/Photo actions are added) gets sliced off by #menuManageList's
+      // overflow-x:hidden instead of flowing to a second line -- worse once
+      // the item has a photo, since the thumbnail leaves even less row
+      // width for the buttons.
+      actions2.style.flexWrap = "wrap";
 
       var editNameBtn2 = document.createElement("button");
       editNameBtn2.className = "btn small secondary";
@@ -8009,6 +8053,33 @@ var qrcode = function() {
     if(prevVal) sel.value = prevVal;
   }
 
+  // Quick stock add -- no supplier/cost involved (that's what "Record a
+  // Purchase" below is for), so this stays visible to Staff too. Logged
+  // as reason="restock", distinct from "adjustment" (a manual correction
+  // typed into an ingredient's own Edit box) and "purchase" (cost-tracked).
+  document.getElementById("btnAddStock").addEventListener("click", function(){
+    var item = findInventoryItem(document.getElementById("invAddStockItem").value);
+    if(!item){ showToast("Add an ingredient first"); return; }
+    var qty = parseFloat(document.getElementById("invAddStockQty").value) || 0;
+    if(qty <= 0){ showToast("Enter a quantity greater than 0"); return; }
+    var dateStr = document.getElementById("invAddStockDate").value || new Date().toISOString().slice(0, 10);
+    var whenIso = new Date(dateStr + "T" + new Date().toTimeString().slice(0, 8)).toISOString();
+    var notes = document.getElementById("invAddStockNotes").value.trim();
+
+    insertInventoryStockLog(item.id, qty, "restock", null, null, notes, whenIso).then(function(){
+      item.currentStock = (item.currentStock || 0) + qty;
+      return saveData();
+    }).then(function(){
+      showToast("Stock added");
+      document.getElementById("invAddStockQty").value = "";
+      document.getElementById("invAddStockNotes").value = "";
+      renderInventoryScreen();
+    }).catch(function(err){
+      console.error("Adding stock failed", err);
+      showToast("Could not add stock -- try again");
+    });
+  });
+
   document.getElementById("btnRecordPurchase").addEventListener("click", function(){
     var item = findInventoryItem(document.getElementById("invPurchaseItem").value);
     if(!item){ showToast("Add an ingredient first"); return; }
@@ -8116,7 +8187,7 @@ var qrcode = function() {
   function stockLogReasonLabel(reason){
     var map = {
       purchase: "Purchase (Stock In)", sale: "Sale (Auto-Deducted)", wastage: "Wastage / Spoilage",
-      adjustment: "Manual Adjustment", reversal: "Reversal (Bill Edited/Deleted)"
+      adjustment: "Manual Adjustment", reversal: "Reversal (Bill Edited/Deleted)", restock: "Stock Added (Quick)"
     };
     return map[reason] || reason;
   }
@@ -8186,12 +8257,15 @@ var qrcode = function() {
     populateInvUnitLabelSelect();
     applyInventoryRoleVisibility();
     renderInvItemsList();
+    populateInvItemSelect("invAddStockItem");
     populateInvItemSelect("invPurchaseItem");
     populateInvItemSelect("invWastageItem");
     populateInvLogItemFilter();
     renderLowStockList();
     renderValuationReport();
     var todayStr = new Date().toISOString().slice(0, 10);
+    var addStockDateEl = document.getElementById("invAddStockDate");
+    if(!addStockDateEl.value) addStockDateEl.value = todayStr;
     var purchaseDateEl = document.getElementById("invPurchaseDate");
     if(!purchaseDateEl.value) purchaseDateEl.value = todayStr;
     var wastageDateEl = document.getElementById("invWastageDate");
@@ -11329,6 +11403,46 @@ var qrcode = function() {
   });
   document.getElementById("staffLoginPinInput").addEventListener("keydown", function(e){
     if(e.key === "Enter") document.getElementById("btnStaffLogin").click();
+  });
+
+  // Recovery path for the one lockout Settings can't fix itself: the
+  // Owner forgot their PIN and there's no other Owner account to log in
+  // and reset it for them (a Staff member forgetting theirs is already
+  // solved -- any Owner can just open Settings and edit that account's
+  // PIN, no code needed for that). This device's activated license key
+  // (already cached locally by the license system, see getStoredLicense
+  // above -- no server round-trip needed) stands in as the one secret
+  // that's meant to outlive any PIN: it's on the purchase receipt, not
+  // something staff would casually know, and confirming it wipes every
+  // account and turns login off, so the owner can set up fresh ones.
+  document.getElementById("btnForgotStaffPin").addEventListener("click", function(){
+    var rec = getStoredLicense();
+    var storedKey = rec && rec.licenseKey;
+    if(!storedKey){
+      alert("This device has no license key on record to verify against. Please contact support to recover access.");
+      return;
+    }
+    var entered = prompt(
+      "This resets EVERY login account on this device and turns the PIN system off, so anyone can set up fresh accounts in Settings afterward.\n\n" +
+      "To confirm you're the owner, enter this device's license key (the one used to activate the app):"
+    );
+    if(entered === null) return;
+    if(entered.trim().toUpperCase() !== String(storedKey).toUpperCase()){
+      alert("That license key doesn't match this device's activation. Login was not reset.");
+      return;
+    }
+    data.staffAccounts = [];
+    currentUser = null;
+    loginRequiredThisSession = false;
+    saveData();
+    hideStaffLoginScreen();
+    if(!appStartedOnce){
+      startAppUnlocked();
+    } else {
+      applyRolePermissions();
+      renderHeader();
+    }
+    showToast("Login reset -- set up new accounts in Settings");
   });
 
   document.getElementById("currentUserBadge").addEventListener("click", function(){
