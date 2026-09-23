@@ -47,9 +47,15 @@ fn migrations() -> Vec<Migration> {
             sql: include_str!("../migrations/0003_staff_accounts.sql"),
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 4,
+            description: "cleared_orders_log",
+            sql: include_str!("../migrations/0004_cleared_orders_log.sql"),
+            kind: MigrationKind::Up,
+        },
     ]
-    // Next schema change ever needed: append a new Migration { version: 4, ... }
-    // here. Do not edit versions 1, 2, or 3 once any customer has run them.
+    // Next schema change ever needed: append a new Migration { version: 5, ... }
+    // here. Do not edit versions 1, 2, 3, or 4 once any customer has run them.
 }
 
 /// Real OS-level device identifier for license activation (replaces the

@@ -28,6 +28,21 @@
       }
       document.documentElement.setAttribute("data-theme", theme);
     }catch(e){}
+    // Font size: applied before paint too, same reasoning as theme above --
+    // otherwise text would visibly jump in size right after load. Uses
+    // CSS zoom (not font-size/rem) because this app's ~11,000+ lines of
+    // CSS hardcode font sizes, paddings and widths in raw px throughout --
+    // zoom scales all of that proportionally at once without needing to
+    // rewrite every rule to rem. Safe here specifically because this app
+    // only ever runs inside Tauri's WebView2 (Chromium), where zoom is
+    // fully supported and predictable, unlike its patchy support in
+    // Firefox on the open web.
+    try{
+      var savedScale = localStorage.getItem("billingAppFontScale_v1");
+      if(savedScale && savedScale !== "normal"){
+        document.documentElement.setAttribute("data-font-scale", savedScale);
+      }
+    }catch(e){}
   })();
 </script>
 <style>
@@ -89,6 +104,15 @@
     -webkit-font-smoothing:antialiased;
     letter-spacing:0.1px;
   }
+  /* ---- Adjustable font size (Settings -> Display) ---- so older/low-
+     vision users can make the whole app bigger, not just body text --
+     zoom scales buttons, icons and spacing along with it, so nothing
+     overflows or looks unbalanced the way bumping only font-size would.
+     See the inline <head> script for why zoom (not rem) and why that's
+     safe in this specific app. ---- */
+  html[data-font-scale="large"] body{ zoom:1.15; }
+  html[data-font-scale="xlarge"] body{ zoom:1.3; }
+  html[data-font-scale="small"] body{ zoom:0.9; }
   header.appbar{
     background:linear-gradient(135deg, var(--primary) 0%, var(--primary-dark) 100%);
     color:#fff;
@@ -995,6 +1019,11 @@
       padding:0;
       width:auto;
     }
+    /* The adjustable Display font-size setting (Settings) uses CSS zoom
+       on body for on-screen readability -- never let that also scale the
+       printed receipt/KOT, which has to match the physical thermal paper
+       width (58/80mm) regardless of what the on-screen size is set to. */
+    body{ zoom:1 !important; }
     body *{visibility:hidden;}
     #receipt, #receipt *{visibility:visible;}
     #receipt{
@@ -1186,6 +1215,17 @@
   #screen-history, #screen-credit{
     max-width:1150px;
     margin:0 auto;
+  }
+  /* ---- On genuinely large desktop monitors (not just a bigger laptop),
+     the 1150/1400px caps above/below were leaving a lot of dead space on
+     either side -- widen them further past ~1700px of actual screen
+     width, instead of removing the cap outright (which would stretch
+     text lines uncomfortably wide and hurt readability). ---- */
+  @media (min-width:1700px){
+    #screen-history, #screen-credit, #screen-dashboard, #screen-settings{
+      max-width:1500px;
+    }
+    main{ max-width:1700px; }
   }
   /* ---- Dashboard: a proper 2-column grid instead of one long single-file
      stack of full-width cards -- short reports (Summary, Payment,
@@ -1947,6 +1987,19 @@
       </div>
     </div>
 
+    <div class="card" id="cardMenuData">
+      <h2>📋 Menu Data</h2>
+      <p class="muted">Export just your menu (categories and items, including sizes/rates and recipes) to reuse on another device, or as a quick backup before making big changes. This is separate from the full Data &amp; Backup export in Settings, which also includes bills and everything else.</p>
+      <div class="row">
+        <button class="btn secondary" id="btnExportMenu" type="button">Export Menu (JSON)</button>
+        <button class="btn secondary" id="btnImportMenu" type="button">Import Menu</button>
+      </div>
+      <input type="file" id="importMenuFile" accept=".json" style="display:none;">
+      <p class="muted" style="margin-top:4px;">Importing REPLACES every category and menu item currently on this device with what's in the file -- it doesn't merge. Export a copy first if you want to be able to go back.</p>
+      <button class="btn danger" id="btnEraseMenu" type="button" style="margin-top:10px;">🗑️ Erase All Menu (Categories &amp; Items)</button>
+      <p class="muted" style="margin-top:4px;">Wipes every category and menu item on this device. Bills, tables, inventory and settings are untouched.</p>
+    </div>
+
     <div class="card" id="cardMenuAddItem">
       <h2>Add Menu Item / Rate</h2>
       <div class="row">
@@ -2275,6 +2328,12 @@
       <div id="dashTaxBox"></div>
     </div>
 
+    <div class="card" id="cardDashDiningParcel">
+      <h2>🍽️ Dine-in vs 📦 Parcel</h2>
+      <p class="muted">Sales split by order type, using the Dine-in/Parcel toggle on each bill.</p>
+      <div id="dashDiningParcelBox"></div>
+    </div>
+
     <div class="card" id="cardDashCategory">
       <h2>Sales by Category</h2>
       <div id="dashCategoryBox"></div>
@@ -2329,6 +2388,18 @@
 
       <label>Footer Note (shown on receipt)</label>
       <textarea id="footerNote" rows="2" placeholder="Thank you for visiting! GSTIN: ..."></textarea>
+    </div>
+
+    <div class="card" id="cardDisplaySettings">
+      <h2>🔍 Display</h2>
+      <label>Text &amp; Button Size</label>
+      <select id="fontScaleSelect">
+        <option value="normal">Normal</option>
+        <option value="large">Large</option>
+        <option value="xlarge">Extra Large</option>
+        <option value="small">Small</option>
+      </select>
+      <p class="muted" style="margin-top:4px;">Makes everything on screen bigger (or smaller) -- text, buttons, icons together -- useful on a bigger monitor or for anyone who finds the normal size hard to read. Takes effect immediately on this device.</p>
     </div>
 
     <div class="card">
@@ -4816,7 +4887,7 @@ var qrcode = function() {
      ============================================================ */
   var LICENSE_API_BASE = "https://licensing-platform.pages.dev"; // set to the real deployed licensing-platform URL
   var PRODUCT_ID = "restaurant-pos";
-  var APP_VERSION = "0.1.22";
+  var APP_VERSION = "0.1.23";
   var DB_VERSION = "1";
   var LICENSED_TO = "";
 
@@ -4877,7 +4948,11 @@ var qrcode = function() {
     // Owner/Staff named accounts (see migrations/0003_staff_accounts.sql).
     // Empty by default -- the app runs with no login required until the
     // owner actually sets up at least one account in Settings.
-    staffAccounts: []
+    staffAccounts: [],
+    // Anti-theft audit trail (see migrations/0004_cleared_orders_log.sql):
+    // every "Clear Items" event, not just the risky ones, so Dashboard can
+    // show a permanent record instead of relying on nobody ever needing it.
+    clearedOrdersLog: []
   };
 
   // In-memory copy of all app data. Populated once loadData()'s promise
@@ -4929,6 +5004,9 @@ var qrcode = function() {
     // not set up yet on this device -- see maybeShowLoginScreen(), which
     // treats an empty list as "no login required" rather than a lockout.
     parsed.staffAccounts = parsed.staffAccounts || [];
+    // Anti-theft audit trail. Empty means nothing's ever been cleared yet
+    // (or this is a fresh install) -- see migrations/0004_cleared_orders_log.sql.
+    parsed.clearedOrdersLog = parsed.clearedOrdersLog || [];
     return parsed;
   }
 
@@ -5056,7 +5134,11 @@ var qrcode = function() {
         db.select("SELECT * FROM menu_item_recipes ORDER BY sort_order, rowid"),
         // Owner/Staff named accounts -- another small blob-backed table,
         // loaded fully just like categories/tables.
-        db.select("SELECT * FROM staff_accounts ORDER BY created_at")
+        db.select("SELECT * FROM staff_accounts ORDER BY created_at"),
+        // Anti-theft audit trail -- blob-backed like deleted_bills_log, not
+        // append-only like the inventory ledgers (see the note at the top
+        // of migrations/0004_cleared_orders_log.sql for why).
+        db.select("SELECT * FROM cleared_orders_log ORDER BY cleared_at")
       ]).then(function(results){
         var biz = results[0][0] || {};
         var categoryRows = results[1];
@@ -5076,6 +5158,7 @@ var qrcode = function() {
         var invItemRows = results[15];
         var recipeRows = results[16];
         var staffAccountRows = results[17];
+        var clearedOrderRows = results[18];
 
         var business = {
           name: biz.name, logo: biz.logo, address: biz.address, phone: biz.phone,
@@ -5204,11 +5287,13 @@ var qrcode = function() {
           return {id: r.id, name: r.name, pin: r.pin, role: r.role, createdAt: r.created_at};
         });
 
+        var clearedOrdersLog = clearedOrderRows.map(function(r){ return JSON.parse(r.entry_json); });
+
         return mergeWithDefaults({
           business: business, categories: categories, subcategories: subcategories,
           menuItems: menuItems, tables: tables, openOrders: openOrders, bills: bills,
           deletedBillsLog: deletedBillsLog, creditPayments: creditPayments, nextItemCode: nextItemCode,
-          inventoryItems: inventoryItems, staffAccounts: staffAccounts
+          inventoryItems: inventoryItems, staffAccounts: staffAccounts, clearedOrdersLog: clearedOrdersLog
         });
       });
     }).catch(function(err){
@@ -5411,6 +5496,13 @@ var qrcode = function() {
         return db.execute("INSERT INTO deleted_bills_log (id, original_bill_id, deleted_at, bill_snapshot) VALUES ($1,$2,$3,$4)",
           [d.id, d.originalBillId || null, d.deletedAt, JSON.stringify(d)]);
       }); })
+      // Anti-theft audit trail -- same blob-resync pattern as
+      // deleted_bills_log just above (see migrations/0004_cleared_orders_log.sql).
+      .then(function(){ return db.execute("DELETE FROM cleared_orders_log"); })
+      .then(function(){ return runSequential(data.clearedOrdersLog, function(entry){
+        return db.execute("INSERT INTO cleared_orders_log (id, cleared_at, entry_json) VALUES ($1,$2,$3)",
+          [entry.id, entry.clearedAt, JSON.stringify(entry)]);
+      }); })
       .then(function(){ return db.execute("DELETE FROM credit_payment_allocations"); })
       .then(function(){ return db.execute("DELETE FROM credit_payments"); })
       .then(function(){ return runSequential(data.creditPayments, function(c){
@@ -5483,6 +5575,33 @@ var qrcode = function() {
 
   // Reflect whatever theme the inline <head> script already applied.
   updateThemeToggleIcon(currentTheme());
+
+  /* ================= FONT / UI SIZE =================
+     Same "applied before paint in <head>, this section just wires the
+     control" split as THEME above. See the inline <head> script for why
+     this uses CSS zoom instead of font-size/rem. */
+  var FONT_SCALE_STORAGE_KEY = "billingAppFontScale_v1";
+
+  function currentFontScale(){
+    return document.documentElement.getAttribute("data-font-scale") || "normal";
+  }
+
+  function applyFontScale(scale){
+    if(scale === "normal"){
+      document.documentElement.removeAttribute("data-font-scale");
+    } else {
+      document.documentElement.setAttribute("data-font-scale", scale);
+    }
+    try{ localStorage.setItem(FONT_SCALE_STORAGE_KEY, scale); }catch(e){}
+  }
+
+  var fontScaleSelectEl = document.getElementById("fontScaleSelect");
+  if(fontScaleSelectEl){
+    fontScaleSelectEl.value = currentFontScale();
+    fontScaleSelectEl.addEventListener("change", function(){
+      applyFontScale(this.value);
+    });
+  }
 
   function uid(prefix){
     return prefix + "_" + Date.now().toString(36) + "_" + Math.floor(Math.random()*10000);
@@ -5584,6 +5703,7 @@ var qrcode = function() {
     "cardBillDetails": true,  // Bill Details
     "cardAddItems": true,     // Add Items
     "cardCurrentBill": true,  // Current Bill
+    "cardMenuData": true,           // Menu Data (export/import/erase)
     "cardMenuAddItem": true,        // Add Menu Item / Rate
     "cardMenuItems": true,          // Menu Items
     "cardInventoryAddItem": true,   // Add Ingredient / Consumable
@@ -5607,24 +5727,29 @@ var qrcode = function() {
     "cardDashSummary": true,
     "cardDashPayment": true,
     "cardDashTax": true,
+    "cardDashDiningParcel": true,
     "cardDashCategory": true,
     "cardDashItemUnits": true,
     "cardDashBestSellers": true,
     "cardDashHours": true,
     "cardDashWeekday": true,
     // Settings: the compact "fill this in" cards default open (Business
-    // Details, Billing Configuration, Printer Setup, UPI Payment QR --
-    // cards 0/1/2/3 in that order), as does Data & Backup (card 5; card 4
-    // is the header-less Save button card, which the accordion system
-    // skips entirely since it has no <h2>). These keys are positional
-    // (screen id + child index) because those cards have no element id of
-    // their own -- if the Settings screen's card order ever changes,
-    // these five indexes need updating to match.
+    // Details, Display, Billing Configuration, Printer Setup, UPI Payment
+    // QR -- cards 0/1/2/3/4 in that order), as does Data & Backup (card 6;
+    // card 5 is the header-less Save button card, which the accordion
+    // system skips entirely since it has no <h2>). These keys are
+    // positional (screen id + child index) because those cards have no
+    // element id of their own -- if the Settings screen's card order ever
+    // changes, these indexes need updating to match. Display (card 1) was
+    // inserted between Business Details and Billing Configuration, which
+    // is why Billing Configuration/Printer Setup/UPI Payment QR/Data &
+    // Backup each shifted up by one index from their original numbers.
     "screen-settings-card-0": true,  // Business Details
-    "screen-settings-card-1": true,  // Billing Configuration
-    "screen-settings-card-2": true,  // Printer Setup
-    "screen-settings-card-3": true,  // UPI Payment QR
-    "screen-settings-card-5": true,  // Data & Backup
+    "cardDisplaySettings": true,     // Display (has its own id, unaffected by card-order renumbering)
+    "screen-settings-card-2": true,  // Billing Configuration
+    "screen-settings-card-3": true,  // Printer Setup
+    "screen-settings-card-4": true,  // UPI Payment QR
+    "screen-settings-card-6": true,  // Data & Backup
     "cardStaffAccounts": true        // Owner & Staff Accounts (has its own id, unaffected by card-order renumbering)
   };
 
@@ -7082,6 +7207,91 @@ var qrcode = function() {
     document.getElementById("categoriesCardChevron").style.transform = categoriesCardCollapsed ? "rotate(-90deg)" : "rotate(0deg)";
   });
   makeKeyboardClickable(document.getElementById("categoriesCardHeader"));
+
+  /* ================= MENU DATA: EXPORT / IMPORT / ERASE =================
+     A menu-only counterpart to Settings' full Data & Backup export --
+     categories, subcategories and menu items (with their nested variants
+     and recipes) only, so an owner can move just their menu to another
+     device, or take a quick safety copy before a big menu overhaul,
+     without dragging bills/tables/inventory/settings along too. Unlike
+     the full backup, this reads straight off the in-memory `data` blob --
+     categories/subcategories/menuItems are already fully loaded there
+     (see loadData()), no async DB query needed. */
+  document.getElementById("btnExportMenu").addEventListener("click", function(){
+    var exportObj = {
+      categories: data.categories,
+      subcategories: data.subcategories,
+      menuItems: data.menuItems,
+      exportedAt: new Date().toISOString()
+    };
+    var blob = new Blob([JSON.stringify(exportObj, null, 2)], {type: "application/json"});
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement("a");
+    a.href = url;
+    a.download = "menu-export-" + new Date().toISOString().slice(0, 10) + ".json";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    showToast("Menu exported");
+  });
+
+  document.getElementById("btnImportMenu").addEventListener("click", function(){
+    document.getElementById("importMenuFile").click();
+  });
+
+  document.getElementById("importMenuFile").addEventListener("change", function(e){
+    var file = e.target.files[0];
+    if(!file) return;
+    var reader = new FileReader();
+    reader.onload = function(ev){
+      try{
+        var imported = JSON.parse(ev.target.result);
+        if(!imported || !Array.isArray(imported.menuItems)){
+          showToast("That doesn't look like a menu export file");
+          return;
+        }
+        if(!confirm(
+          "This REPLACES every category and menu item currently on this device " +
+          "with what's in this file -- it does not merge with what's already here. " +
+          "This cannot be undone unless you've exported a copy first.\n\n" +
+          "Continue?"
+        )){
+          return;
+        }
+        data.categories = imported.categories || [];
+        data.subcategories = imported.subcategories || [];
+        data.menuItems = imported.menuItems || [];
+        ensureItemCodes();
+        saveData();
+        renderMenuScreen();
+        renderBillingScreen();
+        showToast("Menu imported");
+      }catch(err){
+        showToast("Invalid menu file");
+      }
+    };
+    reader.readAsText(file);
+    e.target.value = "";
+  });
+
+  document.getElementById("btnEraseMenu").addEventListener("click", function(){
+    if(!confirm(
+      "This permanently erases every category and menu item on this device. " +
+      "Bills, tables, inventory and settings are untouched. " +
+      "Export a menu backup first if you might want this back.\n\n" +
+      "Continue?"
+    )){
+      return;
+    }
+    data.categories = [];
+    data.subcategories = [];
+    data.menuItems = [];
+    saveData();
+    renderMenuScreen();
+    renderBillingScreen();
+    showToast("Menu erased");
+  });
 
   document.getElementById("newItemPhotoUpload").addEventListener("change", function(e){
     var file = e.target.files[0];
@@ -9131,7 +9341,24 @@ var qrcode = function() {
   document.getElementById("btnClearBill").addEventListener("click", function(){
     var order = getActiveOrder();
     if(order.items.length === 0) return;
-    if(confirm("Clear all items from this order? The table/customer name will be kept.")){
+    var hadKotSent = !!(order.kotSent && Object.keys(order.kotSent).length > 0);
+
+    // Logs every clear (not just the risky ones) to a permanent audit
+    // trail the Owner can review from Dashboard -- see
+    // migrations/0004_cleared_orders_log.sql.
+    function logAndClear(approvedByName){
+      var t = computeTotalsForOrder(order);
+      data.clearedOrdersLog.push({
+        id: uid("clr"),
+        clearedAt: new Date().toISOString(),
+        table: order.table || "",
+        isParcel: !!order.isParcel,
+        items: order.items.map(function(c){ return {name: c.name, qty: c.qty, price: c.price}; }),
+        itemsValue: t.total || 0,
+        hadKotSent: hadKotSent,
+        clearedBy: currentUser ? currentUser.name : "",
+        approvedBy: approvedByName || ""
+      });
       order.items = [];
       order.discountValue = 0;
       order.kotSent = {};
@@ -9139,6 +9366,34 @@ var qrcode = function() {
       document.getElementById("discountValue").value = 0;
       renderCart();
       renderOrderTabs();
+    }
+
+    // Anti-theft: a KOT already went to the kitchen for this order --
+    // food may already be served -- so clearing it without ever saving a
+    // bill needs an Owner to sign off. Without this, a KOT could be
+    // printed and the order quietly wiped with zero record and the
+    // money never reaching the owner. Staff already logged in as Owner
+    // (or running with no login system set up at all, where isOwnerUser()
+    // treats everyone as Owner) skip the extra PIN prompt -- they're
+    // already the authority being asked for.
+    if(hadKotSent && !isOwnerUser()){
+      var pin = prompt(
+        "A Kitchen Order Ticket has already been sent for this order, so " +
+        "clearing it without saving a bill needs Owner approval.\n\n" +
+        "Enter an Owner's PIN to continue:"
+      );
+      if(pin === null) return;
+      var account = findStaffAccountByPin(pin.trim());
+      if(!account || account.role !== "owner"){
+        showToast("That PIN isn't an Owner PIN -- clear cancelled");
+        return;
+      }
+      logAndClear(account.name);
+      return;
+    }
+
+    if(confirm("Clear all items from this order? The table/customer name will be kept.")){
+      logAndClear(hadKotSent ? (currentUser ? currentUser.name : "Owner") : "");
     }
   });
 
@@ -9315,6 +9570,21 @@ var qrcode = function() {
   function countDeletedBillsInRange(fromKey, toKey){
     return data.deletedBillsLog.filter(function(d){
       var k = dateKey(d.deletedAt);
+      if(fromKey && k < fromKey) return false;
+      if(toKey && k > toKey) return false;
+      return true;
+    }).length;
+  }
+
+  // Anti-theft: counts only the RISKY clears (a KOT had already gone to
+  // the kitchen) in range, not every "Clear Items" click -- most clears
+  // are harmless order corrections before anything was sent to the
+  // kitchen, and burying those in the same number would make the flagged
+  // ones easy to miss. See migrations/0004_cleared_orders_log.sql.
+  function countRiskyClearedOrdersInRange(fromKey, toKey){
+    return data.clearedOrdersLog.filter(function(e){
+      if(!e.hadKotSent) return false;
+      var k = dateKey(e.clearedAt);
       if(fromKey && k < fromKey) return false;
       if(toKey && k > toKey) return false;
       return true;
@@ -10144,11 +10414,13 @@ var qrcode = function() {
     var billsWithDiscount = bills.filter(function(b){ return (b.discountAmount || 0) > 0; }).length;
     var editedBillCount = countEditedBills(bills);
     var deletedBillCount = countDeletedBillsInRange(fromVal, toVal);
+    var riskyClearedCount = countRiskyClearedOrdersInRange(fromVal, toVal);
     document.getElementById("dashSummaryBox").innerHTML =
       '<div class="totals-box">' +
         '<div class="line"><span>Bills</span><span>' + totalBills + '</span></div>' +
         (editedBillCount > 0 ? '<div class="line"><span>✏️ Bills Edited</span><span>' + editedBillCount + '</span></div>' : '') +
         (deletedBillCount > 0 ? '<div class="line"><span>🗑️ Bills Deleted</span><span>' + deletedBillCount + '</span></div>' : '') +
+        (riskyClearedCount > 0 ? '<div class="line" style="color:var(--danger);"><span>🔒 Orders Cleared After KOT</span><span>' + riskyClearedCount + '</span></div>' : '') +
         '<div class="line"><span>Average Bill</span><span>' + fmt(avgBill) + '</span></div>' +
         '<div class="line"><span>Total Units Sold</span><span>' + totalUnits + '</span></div>' +
         '<div class="line"><span>Average Items per Bill</span><span>' + avgItemsPerBill.toFixed(1) + '</span></div>' +
@@ -10182,6 +10454,23 @@ var qrcode = function() {
       });
       payHtml += '</div>';
       document.getElementById("dashPaymentBox").innerHTML = payHtml;
+    }
+
+    // Dine-in vs Parcel breakdown -- same isParcel flag already used for
+    // the Dine-in/Parcel toggle and packing charge (see task #55/#56).
+    if(bills.length === 0){
+      document.getElementById("dashDiningParcelBox").innerHTML = '<div class="empty-state">No bills in this range.</div>';
+    } else {
+      var dineInBills = bills.filter(function(b){ return !b.isParcel; });
+      var parcelBills = bills.filter(function(b){ return !!b.isParcel; });
+      var dineInSales = dineInBills.reduce(function(s, b){ return s + (b.total || 0); }, 0);
+      var parcelSales = parcelBills.reduce(function(s, b){ return s + (b.total || 0); }, 0);
+      document.getElementById("dashDiningParcelBox").innerHTML =
+        '<div class="totals-box">' +
+          '<div class="line"><span>🍽️ Dine-in (' + dineInBills.length + ' bills)</span><span>' + fmt(dineInSales) + '</span></div>' +
+          '<div class="line"><span>📦 Parcel (' + parcelBills.length + ' bills)</span><span>' + fmt(parcelSales) + '</span></div>' +
+          '<div class="line grand"><span>Total Sales</span><span>' + fmt(dineInSales + parcelSales) + '</span></div>' +
+        '</div>';
     }
 
     // Tax collected, broken down by rate (useful for GST filing across slabs)
