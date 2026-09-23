@@ -1209,35 +1209,22 @@
      Below 900px width (phones / narrow tablets) it falls back to the
      original single-column stacked layout.
      ===================================================================== */
-  /* ---- History / Credit: single-column lists and tables read best at
-     full width rather than a narrow centred column -- widened to match
-     the other screens instead of the old 900px cap. ---- */
-  #screen-history, #screen-credit{
-    max-width:1150px;
-    margin:0 auto;
-  }
-  /* ---- On genuinely large desktop monitors (not just a bigger laptop),
-     the 1150/1400px caps above/below were leaving a lot of dead space on
-     either side -- widen them further past ~1700px of actual screen
-     width, instead of removing the cap outright (which would stretch
-     text lines uncomfortably wide and hurt readability). ---- */
-  @media (min-width:1700px){
-    #screen-history, #screen-credit, #screen-dashboard, #screen-settings{
-      max-width:1500px;
-    }
-    main{ max-width:1700px; }
-  }
+  /* ---- History / Credit / Dashboard / Settings: NO max-width cap --
+     these screens fill however wide the actual window is on this device
+     (see "maximized":true in tauri.conf.json), instead of capping at a
+     fixed pixel width and centering with margin on either side. Removed
+     the earlier 1150/1400/1500/1700px caps entirely per owner request:
+     on a real desktop monitor those caps left a lot of the maximized
+     window as plain background rather than usable content. The 2-column
+     grids below (Dashboard/Settings) and the Billing 3-column grid still
+     have their own internal gaps, so content doesn't touch edge-to-edge
+     raw, but nothing is capped from growing with the window anymore. ---- */
   /* ---- Dashboard: a proper 2-column grid instead of one long single-file
      stack of full-width cards -- short reports (Summary, Payment,
      Tax, Category, Peak Hours, Day-of-Week) pair up side by side, while
      the long table-style reports (Item-wise Units, Best-Sellers, and the
      Discounts/Rate-Overrides oversight list) keep the full width they
-     need to stay readable. Gets a little more breathing room than the
-     other simple-form screens since it now holds two columns. ---- */
-  #screen-dashboard{
-    max-width:1150px;
-    margin:0 auto;
-  }
+     need to stay readable. ---- */
   @media (min-width:701px){
     #screen-dashboard.screen.active{
       display:grid;
@@ -1252,10 +1239,6 @@
      pair up side by side; the Save button and the Data (export/import/
      erase) card keep the full width so they stay easy to spot and the
      Save button remains the last thing on the screen. ---- */
-  #screen-settings{
-    max-width:1150px;
-    margin:0 auto;
-  }
   @media (min-width:701px){
     #screen-settings.screen.active{
       display:grid;
@@ -1268,7 +1251,13 @@
   }
 
   @media (min-width:901px){
-    main{ max-width:1400px; }
+    /* Overrides the base main{max-width:900px} rule above (that 900px
+       default is for narrow/phone-ish widths) -- no cap here, so the
+       Billing screen's grid (tables / menu / cart) fills however wide
+       the window actually is; the menu column's minmax(0,1fr) below is
+       what makes that real growth (more menu tiles per row) rather than
+       just added margin. */
+    main{ max-width:none; }
     /* The whole Billing tab is locked to exactly one screen's height --
        nothing on it ever scrolls the page itself. Only the three lists
        inside it (tables / menu / cart items) scroll internally, each in
@@ -4887,7 +4876,7 @@ var qrcode = function() {
      ============================================================ */
   var LICENSE_API_BASE = "https://licensing-platform.pages.dev"; // set to the real deployed licensing-platform URL
   var PRODUCT_ID = "restaurant-pos";
-  var APP_VERSION = "0.1.23";
+  var APP_VERSION = "0.1.25";
   var DB_VERSION = "1";
   var LICENSED_TO = "";
 
