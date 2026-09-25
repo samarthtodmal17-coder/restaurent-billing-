@@ -4876,7 +4876,7 @@ var qrcode = function() {
      ============================================================ */
   var LICENSE_API_BASE = "https://licensing-platform.pages.dev"; // set to the real deployed licensing-platform URL
   var PRODUCT_ID = "restaurant-pos";
-  var APP_VERSION = "0.1.25";
+  var APP_VERSION = "0.1.27";
   var DB_VERSION = "1";
   var LICENSED_TO = "";
 
@@ -5650,6 +5650,81 @@ var qrcode = function() {
     t.textContent = msg;
     t.classList.add("show");
     setTimeout(function(){ t.classList.remove("show"); }, 2000);
+  }
+
+  // Small one-off popup asking WHY an order is being cleared, used for the
+  // KOT-then-clear anti-theft log. This replaced an earlier design that
+  // required an Owner's PIN before the clear would go through -- that
+  // blocked completely legitimate cancellations (customer walked out,
+  // wrong order, kitchen couldn't make it) whenever the Owner wasn't
+  // physically reachable, and the only way around it was handing staff
+  // the Owner PIN itself, which defeats the entire point of having one.
+  // This version never blocks: any staff member can always clear an
+  // order, they just have to say why, and it's permanently logged
+  // (see data.clearedOrdersLog) with their name, the time, and the items
+  // -- visible to the Owner under Bill History. Deterrence and
+  // after-the-fact accountability, not a gate.
+  function askClearReason(callback){
+    var overlay = document.createElement("div");
+    overlay.style.cssText = "position:fixed; inset:0; background:rgba(0,0,0,0.55); z-index:9999; display:flex; align-items:center; justify-content:center; padding:16px;";
+    var box = document.createElement("div");
+    box.style.cssText = "background:var(--card-bg,#fff); color:inherit; border-radius:12px; max-width:420px; width:100%; padding:20px; box-shadow:0 10px 40px rgba(0,0,0,0.35);";
+    box.innerHTML =
+      '<h3 style="margin-top:0;">Why is this order being cleared?</h3>' +
+      '<p class="muted" style="margin-top:-6px;">A Kitchen Order Ticket was already sent for this order. Pick a reason so there is a record -- this will not block the clear.</p>' +
+      '<div id="clearReasonBtns" style="display:flex; flex-direction:column; gap:8px; margin-top:12px;"></div>' +
+      '<button class="btn secondary" id="clearReasonCancelBtn" style="width:100%; margin-top:14px;">Cancel</button>';
+    document.body.appendChild(overlay);
+    overlay.appendChild(box);
+
+    function close(){
+      if(overlay.parentNode) overlay.parentNode.removeChild(overlay);
+    }
+
+    var reasons = ["Customer Cancelled", "Wrong Order / Mistake", "Kitchen Couldn't Make It", "Other"];
+    var btnsWrap = box.querySelector("#clearReasonBtns");
+    reasons.forEach(function(r){
+      var b = document.createElement("button");
+      b.className = "btn";
+      b.style.width = "100%";
+      b.textContent = r;
+      b.addEventListener("click", function(){
+        if(r === "Other"){
+          var note = prompt("Briefly, why is this order being cleared?");
+          close();
+          if(note === null) return; // stayed cancelled, no reason given
+          callback(note.trim() || "Other");
+        } else {
+          close();
+          callback(r);
+        }
+      });
+      btnsWrap.appendChild(b);
+    });
+    box.querySelector("#clearReasonCancelBtn").addEventListener("click", function(){
+      close();
+      callback(null);
+    });
+  }
+
+  // Shared writer for data.clearedOrdersLog -- used both by the full
+  // "Clear Items" button and by the cart's quantity −/✕ controls when
+  // they claw back something already sent to the kitchen (see
+  // renderCart). Keeping one function means Bill History only has to
+  // read one log to show everything an Owner needs to review.
+  function pushClearedOrderLogEntry(order, items, itemsValue, hadKotSent, reason, partial){
+    data.clearedOrdersLog.push({
+      id: uid("clr"),
+      clearedAt: new Date().toISOString(),
+      table: order.table || "",
+      isParcel: !!order.isParcel,
+      items: items,
+      itemsValue: itemsValue || 0,
+      hadKotSent: !!hadKotSent,
+      partial: !!partial,
+      clearedBy: currentUser ? currentUser.name : "",
+      reason: reason || ""
+    });
   }
 
   // Makes a non-native clickable element (a <span> or <div> used as a
@@ -8974,18 +9049,42 @@ var qrcode = function() {
         var controls = document.createElement("div");
         controls.className = "qty-controls";
 
-        var minusBtn = document.createElement("button");
-        minusBtn.textContent = "−";
-        minusBtn.addEventListener("click", function(){
-          if(c.qty - 1 <= 0){
+        // How many units of this exact line were already confirmed sent
+        // to the kitchen (see printKOT), if any -- taking the quantity
+        // below this is the same "already served, no bill yet" risk as
+        // the full Clear Items button, just scoped to one line.
+        function sentQtyFor(){
+          return (order.kotSent && order.kotSent[c.key]) || 0;
+        }
+
+        function finishQtyChange(newQty){
+          if(newQty <= 0){
             order.items.splice(idx, 1);
             if(order.kotSent) delete order.kotSent[c.key];
           } else {
-            c.qty -= 1;
+            c.qty = newQty;
+            if(order.kotSent && order.kotSent[c.key]) order.kotSent[c.key] = Math.min(order.kotSent[c.key], newQty);
           }
           saveData();
           renderCart();
           renderOrderTabs();
+        }
+
+        var minusBtn = document.createElement("button");
+        minusBtn.textContent = "−";
+        minusBtn.addEventListener("click", function(){
+          var newQty = c.qty - 1;
+          var sentQty = sentQtyFor();
+          if(sentQty > 0 && newQty < sentQty){
+            askClearReason(function(reason){
+              if(reason === null) return; // cancelled, quantity left unchanged
+              var qtyRemoved = c.qty - Math.max(newQty, 0);
+              pushClearedOrderLogEntry(order, [{name: c.name, qty: qtyRemoved, price: c.price}], (c.price || 0) * qtyRemoved, true, reason, true);
+              finishQtyChange(newQty);
+            });
+            return;
+          }
+          finishQtyChange(newQty);
         });
 
         var qtySpan = document.createElement("span");
@@ -9007,11 +9106,16 @@ var qrcode = function() {
         removeBtn.textContent = "✕";
         removeBtn.style.marginLeft = "6px";
         removeBtn.addEventListener("click", function(){
-          order.items.splice(idx, 1);
-          if(order.kotSent) delete order.kotSent[c.key];
-          saveData();
-          renderCart();
-          renderOrderTabs();
+          var sentQty = sentQtyFor();
+          if(sentQty > 0){
+            askClearReason(function(reason){
+              if(reason === null) return; // cancelled, item left in the cart
+              pushClearedOrderLogEntry(order, [{name: c.name, qty: c.qty, price: c.price}], (c.price || 0) * c.qty, true, reason, true);
+              finishQtyChange(0);
+            });
+            return;
+          }
+          finishQtyChange(0);
         });
 
         controls.appendChild(minusBtn);
@@ -9333,21 +9437,18 @@ var qrcode = function() {
     var hadKotSent = !!(order.kotSent && Object.keys(order.kotSent).length > 0);
 
     // Logs every clear (not just the risky ones) to a permanent audit
-    // trail the Owner can review from Dashboard -- see
+    // trail the Owner can review from Bill History -- see
     // migrations/0004_cleared_orders_log.sql.
-    function logAndClear(approvedByName){
+    function logAndClear(reason){
       var t = computeTotalsForOrder(order);
-      data.clearedOrdersLog.push({
-        id: uid("clr"),
-        clearedAt: new Date().toISOString(),
-        table: order.table || "",
-        isParcel: !!order.isParcel,
-        items: order.items.map(function(c){ return {name: c.name, qty: c.qty, price: c.price}; }),
-        itemsValue: t.total || 0,
-        hadKotSent: hadKotSent,
-        clearedBy: currentUser ? currentUser.name : "",
-        approvedBy: approvedByName || ""
-      });
+      pushClearedOrderLogEntry(
+        order,
+        order.items.map(function(c){ return {name: c.name, qty: c.qty, price: c.price}; }),
+        t.total || 0,
+        hadKotSent,
+        reason,
+        false
+      );
       order.items = [];
       order.discountValue = 0;
       order.kotSent = {};
@@ -9357,32 +9458,27 @@ var qrcode = function() {
       renderOrderTabs();
     }
 
-    // Anti-theft: a KOT already went to the kitchen for this order --
-    // food may already be served -- so clearing it without ever saving a
-    // bill needs an Owner to sign off. Without this, a KOT could be
-    // printed and the order quietly wiped with zero record and the
-    // money never reaching the owner. Staff already logged in as Owner
-    // (or running with no login system set up at all, where isOwnerUser()
-    // treats everyone as Owner) skip the extra PIN prompt -- they're
-    // already the authority being asked for.
-    if(hadKotSent && !isOwnerUser()){
-      var pin = prompt(
-        "A Kitchen Order Ticket has already been sent for this order, so " +
-        "clearing it without saving a bill needs Owner approval.\n\n" +
-        "Enter an Owner's PIN to continue:"
-      );
-      if(pin === null) return;
-      var account = findStaffAccountByPin(pin.trim());
-      if(!account || account.role !== "owner"){
-        showToast("That PIN isn't an Owner PIN -- clear cancelled");
-        return;
-      }
-      logAndClear(account.name);
+    // Anti-theft, take 2: a KOT already went to the kitchen for this
+    // order -- food may already be served -- so this is the risky case
+    // worth a record. An earlier version required an Owner PIN here, but
+    // that blocked genuinely legitimate cancellations whenever the Owner
+    // wasn't reachable, and the only workaround was giving staff the PIN
+    // itself -- which lets them clear silently with no record at all,
+    // the exact thing this was meant to prevent. So instead: never
+    // block, just require a reason. Every KOT-sent clear is logged with
+    // who did it, when, what was on it, and why -- visible to the Owner
+    // under Bill History (see renderHistory) so a pattern (or a single
+    // bad one) is easy to spot after the fact.
+    if(hadKotSent){
+      askClearReason(function(reason){
+        if(reason === null) return; // cancelled the popup, order left untouched
+        logAndClear(reason);
+      });
       return;
     }
 
     if(confirm("Clear all items from this order? The table/customer name will be kept.")){
-      logAndClear(hadKotSent ? (currentUser ? currentUser.name : "Owner") : "");
+      logAndClear("");
     }
   });
 
@@ -9748,11 +9844,15 @@ var qrcode = function() {
       var dayTotalHtml = '<div class="line grand"><span>Day Total (' + g.bills.length + ' ' + billWord + ')</span><span>' + fmt(g.total) + '</span></div>';
       var dayEditedCount = countEditedBills(g.bills);
       var dayDeletedCount = countDeletedBillsInRange(g.key, g.key);
+      var dayRiskyClearedCount = countRiskyClearedOrdersInRange(g.key, g.key);
       if(dayEditedCount > 0){
         dayTotalHtml += '<div class="line"><span>✏️ Bills Edited</span><span>' + dayEditedCount + '</span></div>';
       }
       if(dayDeletedCount > 0){
         dayTotalHtml += '<div class="line"><span>🗑️ Bills Deleted</span><span>' + dayDeletedCount + '</span></div>';
+      }
+      if(dayRiskyClearedCount > 0){
+        dayTotalHtml += '<div class="line" style="color:var(--danger);"><span>🔒 Orders Cleared After KOT</span><span>' + dayRiskyClearedCount + '</span></div>';
       }
       Object.keys(g.paymentTotals || {}).sort().forEach(function(mode){
         dayTotalHtml += '<div class="line"><span>' + escapeHtml(mode) + '</span><span>' + fmt(g.paymentTotals[mode]) + '</span></div>';
@@ -9796,6 +9896,33 @@ var qrcode = function() {
           });
           drow.appendChild(viewDeletedBtn);
           list.appendChild(drow);
+        });
+      }
+
+      // Same idea, for orders cleared after a KOT was already sent -- the
+      // reason given (see askClearReason) is shown right in the row so
+      // the Owner doesn't have to click into anything to see it.
+      if(dayRiskyClearedCount > 0){
+        var riskyClearedForDay = data.clearedOrdersLog.filter(function(e){
+          return e.hadKotSent && dateKey(e.clearedAt) === g.key;
+        });
+        riskyClearedForDay.sort(function(a, c){ return new Date(c.clearedAt) - new Date(a.clearedAt); });
+        var clearedHeader = document.createElement("div");
+        clearedHeader.className = "deleted-list-header";
+        clearedHeader.textContent = "🔒 Orders Cleared After KOT (" + riskyClearedForDay.length + ")";
+        list.appendChild(clearedHeader);
+        riskyClearedForDay.forEach(function(e){
+          var crow = document.createElement("div");
+          crow.className = "item-row deleted-row";
+          var cTimeStr = new Date(e.clearedAt).toLocaleTimeString([], {hour:"2-digit", minute:"2-digit"});
+          var itemsSummary = (e.items || []).map(function(it){ return it.qty + "x " + it.name; }).join(", ");
+          var labelLine = (e.partial ? "✂️ Item Removed -- " : "🗑️ Order Cleared -- ") + (e.table ? escapeHtml(e.table) : (e.isParcel ? "Parcel" : "Order"));
+          crow.innerHTML = '<div><div class="item-name">' + labelLine + '</div>' +
+            '<div class="item-cat">' + (e.partial ? "Removed" : "Cleared") + ' at ' + cTimeStr + (e.clearedBy ? " by " + escapeHtml(e.clearedBy) : "") + '</div>' +
+            '<div class="item-cat">Reason: ' + escapeHtml(e.reason || "(none given)") + '</div>' +
+            (itemsSummary ? '<div class="item-cat">Items: ' + escapeHtml(itemsSummary) + '</div>' : '') + '</div>' +
+            '<div style="font-weight:700;">' + fmt(e.itemsValue || 0) + '</div>';
+          list.appendChild(crow);
         });
       }
     });
