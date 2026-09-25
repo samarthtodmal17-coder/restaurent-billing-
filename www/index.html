@@ -3,14 +3,14 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
-<title>Billing App</title>
+<title>Manokshmi RestroBill</title>
 <link rel="manifest" href="manifest.json">
 <link rel="icon" type="image/png" sizes="32x32" href="icon-32.png">
 <link rel="apple-touch-icon" href="icon-180.png">
 <meta name="theme-color" content="#1c2c52">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="apple-mobile-web-app-title" content="Billing App">
+<meta name="apple-mobile-web-app-title" content="Manokshmi RestroBill">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Manrope:wght@600;700;800&display=swap" rel="stylesheet">
@@ -140,6 +140,17 @@
     object-fit:contain;
     border-radius:6px;
     background:#fff;
+  }
+  /* ---- Vendor attribution, header copy -- this one is in the sticky
+     app header so it's on screen on every tab, not just the lock screen
+     and the bottom of Settings (see .vendor-watermark below, which is
+     still used there). Plain text, no link -- never shown on printed
+     receipts/KOT tickets, screen-only. ---- */
+  .vendor-watermark-header{
+    font-size:10px;
+    color:rgba(255,255,255,0.65);
+    white-space:nowrap;
+    letter-spacing:0.2px;
   }
   .theme-toggle-btn{
     background:rgba(255,255,255,0.12);
@@ -1064,6 +1075,7 @@
        theme toggle on a phone-width screen -- the date is the least
        essential of the three, so it's the one that goes first. */
     header.appbar #headerDate{display:none;}
+    .vendor-watermark-header{display:none;}
     .current-user-badge{font-size:11px; padding:3px 8px;}
   }
 
@@ -1755,9 +1767,10 @@
 <header class="appbar">
   <div class="brand">
     <img id="headerLogo" class="logo-sm" src="" style="display:none;">
-    <span id="headerName">Billing App</span>
+    <span id="headerName">Manokshmi RestroBill</span>
   </div>
   <div style="display:flex; align-items:center; gap:10px;">
+    <span class="vendor-watermark-header">Product of Manokshmi Technologies</span>
     <span class="muted" style="color:#dff2ea; font-size:12px;" id="headerDate"></span>
     <span class="current-user-badge" id="currentUserBadge" style="display:none;" title="Click to switch user" role="button" tabindex="0"></span>
     <button type="button" id="themeToggleBtn" class="theme-toggle-btn" title="Switch light/dark theme" aria-label="Toggle dark mode">🌙</button>
@@ -4876,7 +4889,7 @@ var qrcode = function() {
      ============================================================ */
   var LICENSE_API_BASE = "https://licensing-platform.pages.dev"; // set to the real deployed licensing-platform URL
   var PRODUCT_ID = "restaurant-pos";
-  var APP_VERSION = "0.1.27";
+  var APP_VERSION = "0.1.29";
   var DB_VERSION = "1";
   var LICENSED_TO = "";
 
@@ -5943,7 +5956,7 @@ var qrcode = function() {
 
   /* ---------- Header ---------- */
   function renderHeader(){
-    document.getElementById("headerName").textContent = data.business.name || "Billing App";
+    document.getElementById("headerName").textContent = data.business.name || "Manokshmi RestroBill";
     var img = document.getElementById("headerLogo");
     if(data.business.logo){
       img.src = data.business.logo;
