@@ -4889,7 +4889,7 @@ var qrcode = function() {
      ============================================================ */
   var LICENSE_API_BASE = "https://licensing-platform.pages.dev"; // set to the real deployed licensing-platform URL
   var PRODUCT_ID = "restaurant-pos";
-  var APP_VERSION = "0.1.31";
+  var APP_VERSION = "0.1.32";
   var DB_VERSION = "1";
   var LICENSED_TO = "";
 
@@ -5229,6 +5229,7 @@ var qrcode = function() {
             kotSent: JSON.parse(o.kot_sent || "{}"), createdAt: o.created_at
           };
           if(o.editing_bill_id) order.editingBillId = o.editing_bill_id;
+          if(o.cancelled_session) order.cancelledSession = JSON.parse(o.cancelled_session);
           return order;
         });
 
@@ -5265,6 +5266,8 @@ var qrcode = function() {
           if(b.edited_at) bill.editedAt = b.edited_at;
           if(b.edited_by) bill.editedBy = b.edited_by;
           if(historyByBill[b.id]) bill.editHistory = historyByBill[b.id];
+          if(b.cancelled_items_json) bill.cancelledItems = JSON.parse(b.cancelled_items_json);
+          if(b.cancelled_reason) bill.cancelledReason = b.cancelled_reason;
           return bill;
         });
 
@@ -5452,13 +5455,13 @@ var qrcode = function() {
       .then(function(){ return runSequential(data.openOrders, function(o){
         return db.execute(
           "INSERT INTO open_orders (id, table_id, table_name, customer, customer_phone, discount_value, discount_type, " +
-          "payment_mode, split_enabled, split_payments, is_parcel, packing_charge_override, kot_sent, editing_bill_id, created_at) " +
-          "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)",
+          "payment_mode, split_enabled, split_payments, is_parcel, packing_charge_override, kot_sent, editing_bill_id, created_at, cancelled_session) " +
+          "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)",
           [o.id, o.tableId || null, o.table || "", o.customer || "", o.customerPhone || "", o.discountValue || 0,
            o.discountType || "amount", o.paymentMode || "Cash", o.splitEnabled ? 1 : 0,
            o.splitPayments ? JSON.stringify(o.splitPayments) : null, o.isParcel ? 1 : 0,
            o.packingChargeOverride != null ? o.packingChargeOverride : null, JSON.stringify(o.kotSent || {}),
-           o.editingBillId || null, o.createdAt]
+           o.editingBillId || null, o.createdAt, o.cancelledSession ? JSON.stringify(o.cancelledSession) : null]
         ).then(function(){
           return runSequential(o.items || [], function(it, i){ return insertLineItem(db, "order_items", "order_id", o.id, it, i); });
         });
@@ -5470,15 +5473,16 @@ var qrcode = function() {
         return db.execute(
           "INSERT INTO bills (id, bill_no, date, table_id, table_name, customer, customer_phone, payment_mode, " +
           "split_payments, is_credit, credit_paid, subtotal, discount_amount, discount_value, discount_type, tax_label, " +
-          "tax_percent, tax, tax_by_rate, service_charge_percent, service, is_parcel, packing_charge, total, currency, edited_at, edited_by) " +
-          "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27)",
+          "tax_percent, tax, tax_by_rate, service_charge_percent, service, is_parcel, packing_charge, total, currency, edited_at, edited_by, " +
+          "cancelled_items_json, cancelled_reason) " +
+          "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29)",
           [b.id, b.billNo, b.date, b.tableId || null, b.table || null, b.customer || null, b.customerPhone || null,
            b.paymentMode || null, b.splitPayments ? JSON.stringify(b.splitPayments) : null, b.isCredit ? 1 : 0,
            b.isCredit ? (b.creditPaid || 0) : null, b.subtotal || 0, b.discountAmount || 0, b.discountValue || 0,
            b.discountType || "amount", b.taxLabel || null, b.taxPercent != null ? b.taxPercent : null, b.tax || 0,
            b.taxByRate ? JSON.stringify(b.taxByRate) : null, b.serviceChargePercent != null ? b.serviceChargePercent : null,
            b.service || 0, b.isParcel ? 1 : 0, b.packingCharge || 0, b.total || 0, b.currency || null, b.editedAt || null,
-           b.editedBy || null]
+           b.editedBy || null, b.cancelledItems ? JSON.stringify(b.cancelledItems) : null, b.cancelledReason || null]
         ).then(function(){
           return runSequential(b.items || [], function(it, i){ return insertLineItem(db, "bill_items", "bill_id", b.id, it, i); });
         }).then(function(){
@@ -5738,6 +5742,72 @@ var qrcode = function() {
       clearedBy: currentUser ? currentUser.name : "",
       reason: reason || ""
     });
+  }
+
+  // Accumulates a single KOT-sent-item removal onto order.cancelledSession
+  // instead of writing a permanent log row immediately. The FIRST removal
+  // in an order's life asks for a reason (via askClearReason); every
+  // later removal in that same order reuses that same reason and just
+  // merges its quantity into whichever item this is (by cart line key),
+  // so "2 rotis cancelled one at a time" ends up as one "2x Tandoor Roti"
+  // line instead of two separate "1x Tandoor Roti" log rows. The session
+  // itself is flushed elsewhere: onto the bill if the order gets saved
+  // (see btnSaveBill / the edit-save path), or into one consolidated
+  // clearedOrdersLog entry if the order gets fully cleared instead (see
+  // btnClearBill) -- never written here.
+  //
+  // onDone(true) if the removal was recorded, onDone(false) if the user
+  // cancelled the reason popup (caller should leave the cart untouched).
+  function recordSessionCancellation(order, itemKey, itemName, itemPrice, qtyRemoved, onDone){
+    function merge(reason){
+      if(!order.cancelledSession){
+        order.cancelledSession = {
+          reason: reason,
+          items: {},
+          by: currentUser ? currentUser.name : "",
+          firstAt: new Date().toISOString()
+        };
+      }
+      var items = order.cancelledSession.items;
+      if(items[itemKey]){
+        items[itemKey].qty += qtyRemoved;
+      } else {
+        items[itemKey] = {name: itemName, qty: qtyRemoved, price: itemPrice};
+      }
+      onDone(true);
+    }
+    if(order.cancelledSession && order.cancelledSession.reason){
+      merge(order.cancelledSession.reason);
+    } else {
+      askClearReason(function(reason){
+        if(reason === null){ onDone(false); return; }
+        merge(reason);
+      });
+    }
+  }
+
+  // Moves whatever got cancelled during this order's session onto the
+  // bill it ends up as, instead of a separate cleared_orders_log entry --
+  // this is the "saved, not cleared" outcome for recordSessionCancellation
+  // above. If the bill already carries cancelled items from an earlier
+  // save (re-editing a bill and cancelling something else before saving
+  // again), the new ones are merged in by name+price rather than
+  // replacing the earlier note, so nothing gets silently dropped.
+  function flushCancelledSessionToBill(order, bill){
+    if(!order.cancelledSession || !order.cancelledSession.items) return;
+    var newItems = Object.values(order.cancelledSession.items);
+    if(newItems.length){
+      if(bill.cancelledItems && bill.cancelledItems.length){
+        newItems.forEach(function(ni){
+          var existing = bill.cancelledItems.find(function(ei){ return ei.name === ni.name && ei.price === ni.price; });
+          if(existing){ existing.qty += ni.qty; } else { bill.cancelledItems.push(ni); }
+        });
+      } else {
+        bill.cancelledItems = newItems;
+      }
+      if(!bill.cancelledReason) bill.cancelledReason = order.cancelledSession.reason || "";
+    }
+    order.cancelledSession = null;
   }
 
   // Makes a non-native clickable element (a <span> or <div> used as a
@@ -9089,10 +9159,9 @@ var qrcode = function() {
           var newQty = c.qty - 1;
           var sentQty = sentQtyFor();
           if(sentQty > 0 && newQty < sentQty){
-            askClearReason(function(reason){
-              if(reason === null) return; // cancelled, quantity left unchanged
-              var qtyRemoved = c.qty - Math.max(newQty, 0);
-              pushClearedOrderLogEntry(order, [{name: c.name, qty: qtyRemoved, price: c.price}], (c.price || 0) * qtyRemoved, true, reason, true);
+            var qtyRemoved = c.qty - Math.max(newQty, 0);
+            recordSessionCancellation(order, c.key, c.name, c.price, qtyRemoved, function(recorded){
+              if(!recorded) return; // cancelled the reason popup, quantity left unchanged
               finishQtyChange(newQty);
             });
             return;
@@ -9121,9 +9190,8 @@ var qrcode = function() {
         removeBtn.addEventListener("click", function(){
           var sentQty = sentQtyFor();
           if(sentQty > 0){
-            askClearReason(function(reason){
-              if(reason === null) return; // cancelled, item left in the cart
-              pushClearedOrderLogEntry(order, [{name: c.name, qty: c.qty, price: c.price}], (c.price || 0) * c.qty, true, reason, true);
+            recordSessionCancellation(order, c.key, c.name, c.price, c.qty, function(recorded){
+              if(!recorded) return; // cancelled the reason popup, item left in the cart
               finishQtyChange(0);
             });
             return;
@@ -9448,23 +9516,38 @@ var qrcode = function() {
     var order = getActiveOrder();
     if(order.items.length === 0) return;
     var hadKotSent = !!(order.kotSent && Object.keys(order.kotSent).length > 0);
+    var hadEarlierCancellations = !!(order.cancelledSession && order.cancelledSession.items && Object.keys(order.cancelledSession.items).length > 0);
 
-    // Logs every clear (not just the risky ones) to a permanent audit
-    // trail the Owner can review from Bill History -- see
-    // migrations/0004_cleared_orders_log.sql.
+    // Logs one consolidated entry per order to a permanent audit trail
+    // the Owner can review from Bill History -- see
+    // migrations/0004_cleared_orders_log.sql. This merges together
+    // anything cancelled earlier in this same order's session (see
+    // recordSessionCancellation, for items removed one at a time before
+    // this final clear) with whatever's still in the cart right now, so
+    // one order that had "2 rotis knocked off, then the rest cleared"
+    // produces ONE log row with everything in it, not a scattered pile
+    // of one-item entries.
     function logAndClear(reason){
-      var t = computeTotalsForOrder(order);
-      pushClearedOrderLogEntry(
-        order,
-        order.items.map(function(c){ return {name: c.name, qty: c.qty, price: c.price}; }),
-        t.total || 0,
-        hadKotSent,
-        reason,
-        false
-      );
+      var itemsMap = {};
+      if(order.cancelledSession && order.cancelledSession.items){
+        Object.keys(order.cancelledSession.items).forEach(function(k){
+          itemsMap[k] = Object.assign({}, order.cancelledSession.items[k]);
+        });
+      }
+      order.items.forEach(function(c){
+        if(itemsMap[c.key]){
+          itemsMap[c.key].qty += c.qty;
+        } else {
+          itemsMap[c.key] = {name: c.name, qty: c.qty, price: c.price};
+        }
+      });
+      var mergedItems = Object.values(itemsMap);
+      var itemsValue = mergedItems.reduce(function(s, it){ return s + (it.price || 0) * (it.qty || 0); }, 0);
+      pushClearedOrderLogEntry(order, mergedItems, itemsValue, hadKotSent || hadEarlierCancellations, reason, false);
       order.items = [];
       order.discountValue = 0;
       order.kotSent = {};
+      order.cancelledSession = null;
       saveData();
       document.getElementById("discountValue").value = 0;
       renderCart();
@@ -9478,15 +9561,21 @@ var qrcode = function() {
     // wasn't reachable, and the only workaround was giving staff the PIN
     // itself -- which lets them clear silently with no record at all,
     // the exact thing this was meant to prevent. So instead: never
-    // block, just require a reason. Every KOT-sent clear is logged with
-    // who did it, when, what was on it, and why -- visible to the Owner
+    // block, just require a reason -- reusing the session's reason if
+    // this order already has one (from an earlier partial removal)
+    // rather than asking again. Every KOT-sent clear is logged with who
+    // did it, when, what was on it, and why -- visible to the Owner
     // under Bill History (see renderHistory) so a pattern (or a single
     // bad one) is easy to spot after the fact.
-    if(hadKotSent){
-      askClearReason(function(reason){
-        if(reason === null) return; // cancelled the popup, order left untouched
-        logAndClear(reason);
-      });
+    if(hadKotSent || hadEarlierCancellations){
+      if(order.cancelledSession && order.cancelledSession.reason){
+        logAndClear(order.cancelledSession.reason);
+      } else {
+        askClearReason(function(reason){
+          if(reason === null) return; // cancelled the popup, order left untouched
+          logAndClear(reason);
+        });
+      }
       return;
     }
 
@@ -9577,6 +9666,7 @@ var qrcode = function() {
         existingBill.total = t.total;
         existingBill.editedAt = new Date().toISOString();
         existingBill.editedBy = currentUser ? currentUser.name : "";
+        flushCancelledSessionToBill(order, existingBill);
 
         var finishedEditOrderId = order.id;
         saveData();
@@ -9625,6 +9715,7 @@ var qrcode = function() {
       total: t.total,
       currency: data.business.currency
     };
+    flushCancelledSessionToBill(order, bill);
     data.bills.push(bill);
     data.business.dailySeq += 1;
 
@@ -9770,8 +9861,19 @@ var qrcode = function() {
           ? ' <span class="credit-badge due" title="Changed after it was first saved">✏️ EDITED ×' + b.editHistory.length +
             (b.editedBy ? " by " + escapeHtml(b.editedBy) : "") + '</span>'
           : "";
+        // Items that were cancelled off this order after a KOT was sent,
+        // before the rest got saved as this bill (see
+        // flushCancelledSessionToBill) -- shown right here so the Owner
+        // sees "2x Tandoor Roti cancelled" on the bill itself instead of
+        // having to cross-reference a separate log.
+        var cancelledLine = (b.cancelledItems && b.cancelledItems.length)
+          ? '<div class="item-cat" style="color:var(--danger);">✂️ ' +
+            b.cancelledItems.map(function(it){ return it.qty + "x " + escapeHtml(it.name); }).join(", ") +
+            ' cancelled' + (b.cancelledReason ? " -- " + escapeHtml(b.cancelledReason) : "") + '</div>'
+          : "";
         row.innerHTML = '<div><div class="item-name">' + escapeHtml(b.billNo) + creditBadge + editedBadge + '</div>' +
-          '<div class="item-cat">' + timeStr + (b.table ? " · " + escapeHtml(b.table) : "") + (b.customer ? " · " + escapeHtml(b.customer) : "") + (b.paymentMode ? " · " + escapeHtml(b.paymentMode) : "") + '</div></div>' +
+          '<div class="item-cat">' + timeStr + (b.table ? " · " + escapeHtml(b.table) : "") + (b.customer ? " · " + escapeHtml(b.customer) : "") + (b.paymentMode ? " · " + escapeHtml(b.paymentMode) : "") + '</div>' +
+          cancelledLine + '</div>' +
           '<div style="font-weight:700;">' + fmt(b.total) + '</div>';
         var viewBtn = document.createElement("button");
         viewBtn.className = "btn small secondary";
