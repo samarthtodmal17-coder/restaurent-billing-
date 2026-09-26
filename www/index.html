@@ -4899,7 +4899,7 @@ var qrcode = function() {
      ============================================================ */
   var LICENSE_API_BASE = "https://licensing-platform.pages.dev"; // set to the real deployed licensing-platform URL
   var PRODUCT_ID = "restaurant-pos";
-  var APP_VERSION = "0.1.38";
+  var APP_VERSION = "0.1.40";
   var DB_VERSION = "1";
   var LICENSED_TO = "";
 
@@ -5387,10 +5387,12 @@ var qrcode = function() {
   }
 
   var _saveChain = Promise.resolve();
-  // `options.allowMenuWipe` -- see the guard at the top of doSave() below.
-  // Every call site except the explicit "Erase All Menu" button omits
-  // this, which is the point: it's an opt-IN for the one legitimate way
-  // to intentionally empty the menu, not something routine saves pass.
+  // `options.allowXWipe` flags (menu/bills/staff/inventory/credit/tables/
+  // categories) -- see WIPE_GUARDS and ensureNoSilentWipe() below. Every
+  // routine save omits all of them, which is the point: they're an opt-IN
+  // reserved for the handful of actions that genuinely mean to replace a
+  // whole table (Menu Import, Erase All Menu, full Backup Restore, Reset
+  // All Data), not something routine saves ever pass.
   function saveData(options){
     itemCodeIndexCache = null;
     _saveChain = _saveChain.then(function(){ return doSaveWithRetry(4, options); }).then(function(){
@@ -5444,29 +5446,79 @@ var qrcode = function() {
     if(!keepParentIds.length) return db.execute("DELETE FROM " + table);
     return db.execute("DELETE FROM " + table + " WHERE " + fkColumn + " NOT IN (" + idPlaceholders(keepParentIds.length) + ")", keepParentIds);
   }
+  // v0.1.40 fix: an audit found that order_items/bill_items/bill_edit_history/
+  // credit_payment_allocations were still doing DELETE-then-INSERT for one
+  // parent's rows -- the exact crash-unsafe shape the whole redesign above
+  // was meant to eliminate, just scoped to one record instead of the whole
+  // table. A crash between that DELETE and the insert loop finishing left
+  // that one order/bill/credit-account with zero items on disk. This helper
+  // reverses the order: capture the parent's EXISTING child row ids first,
+  // insert the new rows (old rows are still there, so nothing is ever
+  // missing), and only then delete the captured old ids. A crash mid-loop
+  // now leaves old rows, new rows, or both -- never neither -- and any
+  // leftover duplicate rows from an interrupted attempt get cleaned up
+  // automatically the next time this parent is saved (they become part of
+  // the "old ids" captured at the start of that next call).
+  function resyncChildRows(db, table, fkColumn, fkValue, insertNewRows){
+    return db.select("SELECT id FROM " + table + " WHERE " + fkColumn + " = $1", [fkValue]).then(function(oldRows){
+      var oldIds = oldRows.map(function(r){ return r.id; });
+      return insertNewRows().then(function(){
+        if(!oldIds.length) return;
+        return db.execute("DELETE FROM " + table + " WHERE id IN (" + idPlaceholders(oldIds.length) + ")", oldIds);
+      });
+    });
+  }
 
-  // Refuses a save that would erase an existing, populated menu down to
-  // zero -- unless it's explicitly the "Erase All Menu" button (the only
-  // legitimate way to intentionally empty it), which passes
-  // {allowMenuWipe: true}. This is deliberately independent of WHY
-  // data.menuItems might be empty: it catches any future bug of this
-  // shape, not just the specific loadData() failure already fixed in
-  // v0.1.33 -- if disk currently has menu items and memory doesn't, that
-  // mismatch itself is the signal, regardless of cause. Aborts the WHOLE
-  // save (not just the menu part), since a suspiciously-empty menu often
-  // means the rest of `data` is suspect too (the original bug emptied
-  // everything at once, not just the menu).
-  function ensureMenuWipeAllowed(db, options){
-    if(options.allowMenuWipe) return Promise.resolve();
-    if(data.menuItems && data.menuItems.length > 0) return Promise.resolve();
-    return db.select("SELECT COUNT(*) AS c FROM menu_items").then(function(rows){
-      var existingCount = (rows[0] && rows[0].c) || 0;
-      if(existingCount > 0){
-        var err = new Error("Refused to save: menu is empty in memory but " + existingCount + " item(s) exist on disk.");
-        err.userMessage = "This save was blocked to protect your menu -- it would have erased " + existingCount +
-          " existing item(s) down to zero. If you really want an empty menu, use \"Erase All Menu\" in Settings instead.";
-        throw err;
-      }
+  // Refuses a save that would erase an existing, populated table down to
+  // zero -- unless the caller explicitly opts in with that table's own
+  // {allowXWipe: true} flag (only the genuinely whole-dataset-replacing
+  // actions do: Menu Import, Erase All Menu, full Backup Restore, Reset All
+  // Data). This is deliberately independent of WHY an in-memory list might
+  // be empty: it catches any future bug of this shape, not just the
+  // specific loadData() failure already fixed in v0.1.33 -- if disk
+  // currently has rows and memory doesn't, that mismatch itself is the
+  // signal, regardless of cause.
+  //
+  // v0.1.40: originally this only checked menu_items. An audit found the
+  // exact same silent-wipe risk applies to every other id-keyed table:
+  // mergeWithDefaults() defaults any array missing from an imported/older
+  // backup file to [] (e.g. a backup taken before the Inventory feature
+  // existed has no inventoryItems key at all), and restoreFromBackupObject()
+  // only ever bypassed the menu check -- so restoring such a file would
+  // silently erase every real bill, staff login, ingredient, credit
+  // account, table, or category already on disk, with no guard and no
+  // confirmation. Generalized into one table-driven check covering all of
+  // them; each table keeps its own flag so one action opting in doesn't
+  // silently blind the guard for tables it never intended to touch.
+  var WIPE_GUARDS = [
+    { key: "menuItems", table: "menu_items", flag: "allowMenuWipe", label: "menu" },
+    { key: "bills", table: "bills", flag: "allowBillsWipe", label: "bill history" },
+    { key: "staffAccounts", table: "staff_accounts", flag: "allowStaffWipe", label: "staff accounts" },
+    { key: "inventoryItems", table: "inventory_items", flag: "allowInventoryWipe", label: "inventory items" },
+    { key: "creditPayments", table: "credit_payments", flag: "allowCreditWipe", label: "credit accounts" },
+    { key: "tables", table: "tables", flag: "allowTablesWipe", label: "tables" },
+    { key: "categories", table: "categories", flag: "allowCategoriesWipe", label: "menu categories" }
+  ];
+  // Shared opt-in for the few actions where replacing EVERY table at once
+  // really is the intent (a full backup restore, or Reset All Data).
+  var FULL_WIPE_OPTIONS = {
+    allowMenuWipe: true, allowBillsWipe: true, allowStaffWipe: true, allowInventoryWipe: true,
+    allowCreditWipe: true, allowTablesWipe: true, allowCategoriesWipe: true
+  };
+  function ensureNoSilentWipe(db, options){
+    return runSequential(WIPE_GUARDS, function(g){
+      if(options[g.flag]) return Promise.resolve();
+      var list = data[g.key];
+      if(list && list.length > 0) return Promise.resolve();
+      return db.select("SELECT COUNT(*) AS c FROM " + g.table).then(function(rows){
+        var existingCount = (rows[0] && rows[0].c) || 0;
+        if(existingCount > 0){
+          var err = new Error("Refused to save: " + g.label + " is empty in memory but " + existingCount + " row(s) exist on disk (" + g.table + ").");
+          err.userMessage = "This save was blocked to protect your " + g.label + " -- it would have erased " + existingCount +
+            " existing record(s) down to zero. Close the app now without doing anything else, and contact support.";
+          throw err;
+        }
+      });
     });
   }
 
@@ -5505,7 +5557,7 @@ var qrcode = function() {
     // -- so a crash's blast radius is bounded to the one record being
     // saved at that moment, not every bill or order ever created.
     return getDb().then(function(db){
-      return ensureMenuWipeAllowed(db, options).then(function(){ return db; });
+      return ensureNoSilentWipe(db, options).then(function(){ return db; });
     }).then(function(db){
       var biz = data.business;
       return db.execute(
@@ -5520,30 +5572,63 @@ var qrcode = function() {
          biz.rawBtAutoPrint ? 1 : 0, biz.dailySeq, biz.lastBillDateKey, biz.upiId, biz.showUpiQr ? 1 : 0]
       )
       .then(function(){ return runSequential(data.categories, function(c, i){
-        return db.execute("INSERT OR REPLACE INTO categories (id, name, sort_order) VALUES ($1,$2,$3)", [c.id, c.name, i]);
+        // v0.1.40 fix: was INSERT OR REPLACE. An audit confirmed this app's
+        // SQLite connections run with foreign_keys=ON (sqlx's own default --
+        // verified against sqlx's source), and SQLite's REPLACE conflict
+        // resolution performs a real DELETE-then-INSERT under the hood on
+        // any primary-key conflict, EVEN when nothing actually changed.
+        // Since this row already exists on every save after the first,
+        // that DELETE fires every single time -- and CASCADE foreign keys
+        // (subcategories/menu_items reference categories) would fire the
+        // instant that DELETE happens, before this file's own delete/insert
+        // ordering ever runs. A true UPDATE-based upsert (ON CONFLICT DO
+        // UPDATE) never deletes the row, so it never cascades. Applied to
+        // every id-keyed table below that has any foreign-key child.
+        return db.execute(
+          "INSERT INTO categories (id, name, sort_order) VALUES ($1,$2,$3) " +
+          "ON CONFLICT(id) DO UPDATE SET name=excluded.name, sort_order=excluded.sort_order",
+          [c.id, c.name, i]);
       }); })
       .then(function(){ return deleteMissingIds(db, "categories", data.categories.map(function(c){ return c.id; })); })
 
       .then(function(){ return runSequential(data.subcategories, function(s){
-        return db.execute("INSERT OR REPLACE INTO subcategories (id, category_id, name) VALUES ($1,$2,$3)", [s.id, s.categoryId || null, s.name]);
+        return db.execute(
+          "INSERT INTO subcategories (id, category_id, name) VALUES ($1,$2,$3) " +
+          "ON CONFLICT(id) DO UPDATE SET category_id=excluded.category_id, name=excluded.name",
+          [s.id, s.categoryId || null, s.name]);
       }); })
       .then(function(){ return deleteMissingIds(db, "subcategories", data.subcategories.map(function(s){ return s.id; })); })
 
       .then(function(){ return runSequential(data.tables, function(t, i){
-        return db.execute("INSERT OR REPLACE INTO tables (id, name, sort_order) VALUES ($1,$2,$3)", [t.id, t.name, i]);
+        return db.execute(
+          "INSERT INTO tables (id, name, sort_order) VALUES ($1,$2,$3) " +
+          "ON CONFLICT(id) DO UPDATE SET name=excluded.name, sort_order=excluded.sort_order",
+          [t.id, t.name, i]);
       }); })
       .then(function(){ return deleteMissingIds(db, "tables", data.tables.map(function(t){ return t.id; })); })
 
       .then(function(){ return runSequential(data.staffAccounts || [], function(s){
-        return db.execute("INSERT OR REPLACE INTO staff_accounts (id, name, pin, role, created_at) VALUES ($1,$2,$3,$4,$5)",
+        return db.execute(
+          "INSERT INTO staff_accounts (id, name, pin, role, created_at) VALUES ($1,$2,$3,$4,$5) " +
+          "ON CONFLICT(id) DO UPDATE SET name=excluded.name, pin=excluded.pin, role=excluded.role, created_at=excluded.created_at",
           [s.id, s.name, s.pin, s.role || "staff", s.createdAt || new Date().toISOString()]);
       }); })
       .then(function(){ return deleteMissingIds(db, "staff_accounts", (data.staffAccounts || []).map(function(s){ return s.id; })); })
 
       .then(function(){ return runSequential(data.inventoryItems || [], function(inv){
+        // Highest-severity instance of the REPLACE/cascade bug above:
+        // inventory_purchases and inventory_stock_log are cascade children
+        // of inventory_items, and (by design, see 0002_inventory.sql) are
+        // NEVER refilled by doSave() -- they're append-only ledgers written
+        // directly elsewhere. Under the old INSERT OR REPLACE, every single
+        // save would cascade-delete every purchase/stock-log row for every
+        // existing ingredient, permanently, with nothing to restore them.
         return db.execute(
-          "INSERT OR REPLACE INTO inventory_items (id, name, category, unit_type, unit_label, current_stock, reorder_threshold, last_purchase_cost, archived, created_at) " +
-          "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)",
+          "INSERT INTO inventory_items (id, name, category, unit_type, unit_label, current_stock, reorder_threshold, last_purchase_cost, archived, created_at) " +
+          "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) " +
+          "ON CONFLICT(id) DO UPDATE SET name=excluded.name, category=excluded.category, unit_type=excluded.unit_type, " +
+          "unit_label=excluded.unit_label, current_stock=excluded.current_stock, reorder_threshold=excluded.reorder_threshold, " +
+          "last_purchase_cost=excluded.last_purchase_cost, archived=excluded.archived, created_at=excluded.created_at",
           [inv.id, inv.name, inv.category || "", inv.unitType || "count", inv.unitLabel || "pcs",
            inv.currentStock || 0, inv.reorderThreshold || 0, inv.lastPurchaseCost || 0, 0,
            inv.createdAt || new Date().toISOString()]
@@ -5560,8 +5645,11 @@ var qrcode = function() {
         var recipeIds = [];
         return runSequential(data.menuItems, function(m){
           return db.execute(
-            "INSERT OR REPLACE INTO menu_items (id, code, name, category_id, subcategory_id, price, tax_percent, photo, send_to_kitchen, favorite, out_of_stock) " +
-            "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)",
+            "INSERT INTO menu_items (id, code, name, category_id, subcategory_id, price, tax_percent, photo, send_to_kitchen, favorite, out_of_stock) " +
+            "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) " +
+            "ON CONFLICT(id) DO UPDATE SET code=excluded.code, name=excluded.name, category_id=excluded.category_id, " +
+            "subcategory_id=excluded.subcategory_id, price=excluded.price, tax_percent=excluded.tax_percent, photo=excluded.photo, " +
+            "send_to_kitchen=excluded.send_to_kitchen, favorite=excluded.favorite, out_of_stock=excluded.out_of_stock",
             [m.id, m.code || null, m.name, m.categoryId || null, m.subcategoryId || null,
              m.variants ? null : (m.price != null ? m.price : null), m.taxPercent != null ? m.taxPercent : null,
              m.photo || null, m.sendToKitchen === undefined ? null : (m.sendToKitchen ? 1 : 0),
@@ -5594,20 +5682,24 @@ var qrcode = function() {
 
       .then(function(){ return runSequential(data.openOrders, function(o){
         return db.execute(
-          "INSERT OR REPLACE INTO open_orders (id, table_id, table_name, customer, customer_phone, discount_value, discount_type, " +
+          "INSERT INTO open_orders (id, table_id, table_name, customer, customer_phone, discount_value, discount_type, " +
           "payment_mode, split_enabled, split_payments, is_parcel, packing_charge_override, kot_sent, editing_bill_id, created_at, cancelled_session) " +
-          "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)",
+          "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) " +
+          "ON CONFLICT(id) DO UPDATE SET table_id=excluded.table_id, table_name=excluded.table_name, customer=excluded.customer, " +
+          "customer_phone=excluded.customer_phone, discount_value=excluded.discount_value, discount_type=excluded.discount_type, " +
+          "payment_mode=excluded.payment_mode, split_enabled=excluded.split_enabled, split_payments=excluded.split_payments, " +
+          "is_parcel=excluded.is_parcel, packing_charge_override=excluded.packing_charge_override, kot_sent=excluded.kot_sent, " +
+          "editing_bill_id=excluded.editing_bill_id, created_at=excluded.created_at, cancelled_session=excluded.cancelled_session",
           [o.id, o.tableId || null, o.table || "", o.customer || "", o.customerPhone || "", o.discountValue || 0,
            o.discountType || "amount", o.paymentMode || "Cash", o.splitEnabled ? 1 : 0,
            o.splitPayments ? JSON.stringify(o.splitPayments) : null, o.isParcel ? 1 : 0,
            o.packingChargeOverride != null ? o.packingChargeOverride : null, JSON.stringify(o.kotSent || {}),
            o.editingBillId || null, o.createdAt, o.cancelledSession ? JSON.stringify(o.cancelledSession) : null]
         ).then(function(){
-          // Scoped to just this order, not a blanket delete for every
-          // open order's items -- see the crash-safety note above.
-          return db.execute("DELETE FROM order_items WHERE order_id = $1", [o.id]);
-        }).then(function(){
-          return runSequential(o.items || [], function(it, i){ return insertLineItem(db, "order_items", "order_id", o.id, it, i); });
+          // Insert-first, delete-last -- see resyncChildRows above.
+          return resyncChildRows(db, "order_items", "order_id", o.id, function(){
+            return runSequential(o.items || [], function(it, i){ return insertLineItem(db, "order_items", "order_id", o.id, it, i); });
+          });
         });
       }); })
       .then(function(){ return deleteMissingIds(db, "open_orders", data.openOrders.map(function(o){ return o.id; })); })
@@ -5615,11 +5707,20 @@ var qrcode = function() {
 
       .then(function(){ return runSequential(data.bills, function(b){
         return db.execute(
-          "INSERT OR REPLACE INTO bills (id, bill_no, date, table_id, table_name, customer, customer_phone, payment_mode, " +
+          "INSERT INTO bills (id, bill_no, date, table_id, table_name, customer, customer_phone, payment_mode, " +
           "split_payments, is_credit, credit_paid, subtotal, discount_amount, discount_value, discount_type, tax_label, " +
           "tax_percent, tax, tax_by_rate, service_charge_percent, service, is_parcel, packing_charge, total, currency, edited_at, edited_by, " +
           "cancelled_items_json, cancelled_reason) " +
-          "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29)",
+          "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29) " +
+          "ON CONFLICT(id) DO UPDATE SET bill_no=excluded.bill_no, date=excluded.date, table_id=excluded.table_id, " +
+          "table_name=excluded.table_name, customer=excluded.customer, customer_phone=excluded.customer_phone, " +
+          "payment_mode=excluded.payment_mode, split_payments=excluded.split_payments, is_credit=excluded.is_credit, " +
+          "credit_paid=excluded.credit_paid, subtotal=excluded.subtotal, discount_amount=excluded.discount_amount, " +
+          "discount_value=excluded.discount_value, discount_type=excluded.discount_type, tax_label=excluded.tax_label, " +
+          "tax_percent=excluded.tax_percent, tax=excluded.tax, tax_by_rate=excluded.tax_by_rate, " +
+          "service_charge_percent=excluded.service_charge_percent, service=excluded.service, is_parcel=excluded.is_parcel, " +
+          "packing_charge=excluded.packing_charge, total=excluded.total, currency=excluded.currency, edited_at=excluded.edited_at, " +
+          "edited_by=excluded.edited_by, cancelled_items_json=excluded.cancelled_items_json, cancelled_reason=excluded.cancelled_reason",
           [b.id, b.billNo, b.date, b.tableId || null, b.table || null, b.customer || null, b.customerPhone || null,
            b.paymentMode || null, b.splitPayments ? JSON.stringify(b.splitPayments) : null, b.isCredit ? 1 : 0,
            b.isCredit ? (b.creditPaid || 0) : null, b.subtotal || 0, b.discountAmount || 0, b.discountValue || 0,
@@ -5628,21 +5729,21 @@ var qrcode = function() {
            b.service || 0, b.isParcel ? 1 : 0, b.packingCharge || 0, b.total || 0, b.currency || null, b.editedAt || null,
            b.editedBy || null, b.cancelledItems ? JSON.stringify(b.cancelledItems) : null, b.cancelledReason || null]
         ).then(function(){
-          // Scoped to just this bill -- see the crash-safety note above.
-          return db.execute("DELETE FROM bill_items WHERE bill_id = $1", [b.id]);
+          // Insert-first, delete-last -- see resyncChildRows above.
+          return resyncChildRows(db, "bill_items", "bill_id", b.id, function(){
+            return runSequential(b.items || [], function(it, i){ return insertLineItem(db, "bill_items", "bill_id", b.id, it, i); });
+          });
         }).then(function(){
-          return runSequential(b.items || [], function(it, i){ return insertLineItem(db, "bill_items", "bill_id", b.id, it, i); });
-        }).then(function(){
-          return db.execute("DELETE FROM bill_edit_history WHERE bill_id = $1", [b.id]);
-        }).then(function(){
-          if(!b.editHistory || !b.editHistory.length) return;
-          return runSequential(b.editHistory, function(h){
-            return db.execute(
-              "INSERT INTO bill_edit_history (bill_id, edited_at, edited_by, previous_items, previous_total, previous_discount_amount, previous_table, previous_customer, previous_payment_mode) " +
-              "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)",
-              [b.id, h.editedAt, h.editedBy || null, JSON.stringify(h.previousItems || []), h.previousTotal || 0, h.previousDiscountAmount || 0,
-               h.previousTable || null, h.previousCustomer || null, h.previousPaymentMode || null]
-            );
+          return resyncChildRows(db, "bill_edit_history", "bill_id", b.id, function(){
+            if(!b.editHistory || !b.editHistory.length) return Promise.resolve();
+            return runSequential(b.editHistory, function(h){
+              return db.execute(
+                "INSERT INTO bill_edit_history (bill_id, edited_at, edited_by, previous_items, previous_total, previous_discount_amount, previous_table, previous_customer, previous_payment_mode) " +
+                "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)",
+                [b.id, h.editedAt, h.editedBy || null, JSON.stringify(h.previousItems || []), h.previousTotal || 0, h.previousDiscountAmount || 0,
+                 h.previousTable || null, h.previousCustomer || null, h.previousPaymentMode || null]
+              );
+            });
           });
         });
       }); })
@@ -5665,15 +5766,18 @@ var qrcode = function() {
       .then(function(){ return deleteMissingIds(db, "cleared_orders_log", data.clearedOrdersLog.map(function(entry){ return entry.id; })); })
 
       .then(function(){ return runSequential(data.creditPayments, function(c){
-        return db.execute("INSERT OR REPLACE INTO credit_payments (id, account_key, name, phone, amount, mode, note, date) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)",
+        return db.execute(
+          "INSERT INTO credit_payments (id, account_key, name, phone, amount, mode, note, date) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) " +
+          "ON CONFLICT(id) DO UPDATE SET account_key=excluded.account_key, name=excluded.name, phone=excluded.phone, " +
+          "amount=excluded.amount, mode=excluded.mode, note=excluded.note, date=excluded.date",
           [c.id, c.key || null, c.name || null, c.phone || null, c.amount || 0, c.mode || null, c.note || null, c.date]
         ).then(function(){
-          // Scoped to just this credit account -- see the crash-safety note above.
-          return db.execute("DELETE FROM credit_payment_allocations WHERE credit_payment_id = $1", [c.id]);
-        }).then(function(){
-          return runSequential(c.allocations || [], function(a){
-            return db.execute("INSERT INTO credit_payment_allocations (credit_payment_id, bill_id, bill_no, amount) VALUES ($1,$2,$3,$4)",
-              [c.id, a.billId, a.billNo, a.amount]);
+          // Insert-first, delete-last -- see resyncChildRows above.
+          return resyncChildRows(db, "credit_payment_allocations", "credit_payment_id", c.id, function(){
+            return runSequential(c.allocations || [], function(a){
+              return db.execute("INSERT INTO credit_payment_allocations (credit_payment_id, bill_id, bill_no, amount) VALUES ($1,$2,$3,$4)",
+                [c.id, a.billId, a.billNo, a.amount]);
+            });
           });
         });
       }); })
@@ -6324,7 +6428,17 @@ var qrcode = function() {
     // save is still mid-flight could write a mix of pre- and post-import
     // data across different tables. _saveChain never rejects (see
     // saveData()'s own .catch), so this always resolves.
-    return _saveChain.then(function(){
+    //
+    // v0.1.40 fix: this used to just READ _saveChain without reassigning
+    // it -- so it waited for whatever was already in flight, but any
+    // UNRELATED saveData() call fired by ordinary staff activity WHILE
+    // this restore was still running (data reassignment + doSave() +
+    // restoreInventoryLedgers()) would chain onto the stale, already-
+    // resolved _saveChain instead of queuing behind this restore, letting
+    // its own doSave() run concurrently against the same tables. Now this
+    // restore's own promise is published back into _saveChain so nothing
+    // else can jump the queue while it's in progress.
+    var restorePromise = _saveChain.then(function(){
       data = mergeWithDefaults(imported); // fills in any fields missing from an older/partial backup (e.g. subcategories)
       activeOrderId = null;
       ensureItemCodes();
@@ -6336,11 +6450,12 @@ var qrcode = function() {
       // the same pooled SQLite connections, which is exactly the kind of
       // contention that produces the transient "database is locked"
       // errors elsewhere in this file.
-      // Explicit, confirmed whole-dataset restore -- the backup file's
-      // own menu (even if legitimately empty, e.g. a backup taken before
-      // any menu existed) is what should end up on disk, not blocked by
-      // the save guard meant to catch an ACCIDENTALLY empty menu.
-      return saveData({allowMenuWipe: true}).then(function(){
+      // Explicit, confirmed whole-dataset restore -- the backup file's own
+      // data (even a table that's legitimately empty, e.g. a backup taken
+      // before the Inventory feature existed) is what should end up on
+      // disk, not blocked by the guard meant to catch an ACCIDENTALLY
+      // empty table.
+      return saveData(FULL_WIPE_OPTIONS).then(function(){
         return restoreInventoryLedgers(importedPurchases, importedStockLog);
       });
     }).then(function(){
@@ -6349,6 +6464,8 @@ var qrcode = function() {
       console.error("Restoring inventory purchase/stock history failed", err);
       showToast(successMessage + ", but purchase/stock history could not be restored");
     });
+    _saveChain = restorePromise.catch(function(){}); // keep the shared chain alive even if this restore failed
+    return restorePromise;
   }
 
   document.getElementById("importFile").addEventListener("change", function(e){
@@ -6373,18 +6490,24 @@ var qrcode = function() {
       // Same reasoning as Import above: wait out any save already in
       // flight before swapping `data` for a blank default object, so a
       // save that's mid-write doesn't end up mixing old and new data.
-      _saveChain.then(function(){
+      // v0.1.40 fix: also reassign _saveChain itself (previously only
+      // read/waited on it) -- see the matching note in
+      // restoreFromBackupObject() above for why that matters.
+      _saveChain = _saveChain.then(function(){
         data = JSON.parse(JSON.stringify(defaultData));
         activeOrderId = null;
         // Explicit, confirmed "erase everything" action -- same
         // reasoning as Erase All Menu above.
-        saveData({allowMenuWipe: true});
+        var p = saveData(FULL_WIPE_OPTIONS);
         renderHeader();
         renderSettingsScreen();
         renderMenuScreen();
         renderBillingScreen();
         renderHistory();
         showToast("All data erased");
+        return p;
+      }).catch(function(err){
+        console.error("Reset All Data failed", err);
       });
     }
   });
@@ -8357,12 +8480,22 @@ var qrcode = function() {
   // backup file, so it's upserted (INSERT OR REPLACE) then cleaned up of
   // anything not in the import, same crash-safe pattern as doSave(); the
   // old rows are never gone before their replacements are on disk.
-  // inventory_stock_log rows have no stable id (AUTOINCREMENT primary
-  // key), so it's still a delete-then-reinsert -- but since an import is
-  // a rare, deliberate, whole-device replace (not something that runs on
-  // every bill like doSave() does), and it now runs strictly after
-  // purchases are already safely upserted, that's an acceptable
-  // trade-off rather than a schema change.
+  //
+  // v0.1.40 fix: inventory_stock_log used to be a DELETE FROM the whole
+  // table followed by a plain reinsert loop -- so a crash, power loss, or
+  // any non-transient failure partway through permanently destroyed the
+  // ENTIRE stock-movement audit trail (every past sale-deduction,
+  // purchase, wastage, adjustment) for this device, with nothing left to
+  // recover it from (the pre-restore rows were already gone, and this
+  // table is otherwise never refilled -- see the append-only note where
+  // it's declared). The reasoning at the time was that this table's PK is
+  // AUTOINCREMENT with no stable id from the JS side, so it couldn't use
+  // the same upsert-then-cleanup pattern as inventory_purchases just
+  // above. That reasoning missed that buildBackupExportObject() exports
+  // this table with a plain `SELECT *`, which DOES include each row's
+  // original id in the backup file -- so that id can simply be reused on
+  // restore (INTEGER PRIMARY KEY accepts an explicit value same as any
+  // other upsert here), making the exact same crash-safe pattern apply.
   function restoreInventoryLedgersAttempt(purchases, stockLog){
     return getDb().then(function(db){
       return runSequential(purchases || [], function(p){
@@ -8373,16 +8506,16 @@ var qrcode = function() {
         );
       })
       .then(function(){ return deleteMissingIds(db, "inventory_purchases", (purchases || []).map(function(p){ return p.id; })); })
-      .then(function(){ return db.execute("DELETE FROM inventory_stock_log"); })
       .then(function(){
         return runSequential(stockLog || [], function(l){
           return db.execute(
-            "INSERT INTO inventory_stock_log (item_id, change_qty, reason, reference_bill_id, reference_purchase_id, notes, created_at) " +
-            "VALUES ($1,$2,$3,$4,$5,$6,$7)",
-            [l.item_id, l.change_qty, l.reason, l.reference_bill_id || null, l.reference_purchase_id || null, l.notes || "", l.created_at]
+            "INSERT OR REPLACE INTO inventory_stock_log (id, item_id, change_qty, reason, reference_bill_id, reference_purchase_id, notes, created_at) " +
+            "VALUES ($1,$2,$3,$4,$5,$6,$7,$8)",
+            [l.id != null ? l.id : null, l.item_id, l.change_qty, l.reason, l.reference_bill_id || null, l.reference_purchase_id || null, l.notes || "", l.created_at]
           );
         });
-      });
+      })
+      .then(function(){ return deleteMissingIds(db, "inventory_stock_log", (stockLog || []).map(function(l){ return l.id; }).filter(function(id){ return id != null; })); });
     });
   }
 
@@ -10365,9 +10498,22 @@ var qrcode = function() {
       customer: bill.customer || "",
       customerPhone: bill.customerPhone || "",
       items: bill.items.map(function(it){
+        // v0.1.40 fix: this used to always null itemId out. An audit found
+        // that broke inventory auto-deduction on save -- btnSaveBill's
+        // edit-save path reverses the OLD consumption (computed from
+        // existingBill.items, itemId intact) then applies the NEW
+        // consumption (computed from these rebuilt order.items), but
+        // computeIngredientConsumption() skips any item with no itemId --
+        // so the old deduction was reversed (stock added back) and the new
+        // one never re-applied, permanently inflating stock on every
+        // single bill edit. Preserve itemId when the menu item still
+        // exists (same "still exists" check as tableStillExists above);
+        // only null it if the item was deleted since this bill was made,
+        // same as the original bug-era behavior would still apply then.
+        var itemStillExists = it.itemId && data.menuItems.some(function(m){ return m.id === it.itemId; });
         return {
           key: "editline_" + uid("k"),
-          itemId: null,
+          itemId: itemStillExists ? it.itemId : null,
           variantId: null,
           name: it.name,
           price: it.price,
@@ -12229,7 +12375,12 @@ var qrcode = function() {
     applyReceiptPrintStyle("receipt");
     updateLastExportStatusText();
     maybeShowBackupReminder();
-    refreshAutoBackupStatusUi();
+    // Just maybeRunAutomaticBackup() -- it calls refreshAutoBackupStatusUi()
+    // itself once it finishes. A separate upfront call used to run here
+    // too, racing the very first-ever mkdir() of the backups folder: on a
+    // brand-new device, readDir() on a not-yet-created folder rejects, so
+    // the status text would flash "Could not check automatic backups" for
+    // a moment even though nothing was actually wrong.
     maybeRunAutomaticBackup();
     applyRolePermissions();
     // Bill History defaults to Today (not All Dates) -- checking on
@@ -12301,11 +12452,15 @@ var qrcode = function() {
           lastCheckedAt: new Date().toISOString()
         });
         document.getElementById("lockScreen").classList.remove("show");
+        // v0.1.40 fix: this used to have no .catch() -- see
+        // onDataReadyFailed() below for why a bare, uncaught rejection
+        // here specifically produces a blank frozen app with no on-screen
+        // indication once the lock screen is already gone.
         dataReadyPromise.then(function(loadedData){
           data = loadedData;
           startApp();
           setTimeout(maybeCheckForUpdate, 5000);
-        });
+        }).catch(onDataReadyFailed);
       } else {
         errorEl.textContent = result.error || "Invalid license key.";
         errorEl.style.display = "block";
@@ -12497,9 +12652,36 @@ var qrcode = function() {
     var toDelete = names.slice(0, Math.max(0, names.length - AUTO_BACKUP_RETENTION_COUNT));
     return runSequential(toDelete, function(name){
       return window.__TAURI__.path.join(folderPath, name).then(function(fp){
-        return window.__TAURI__.fs.remove(fp);
+        return window.__TAURI__.fs.remove(fp).catch(function(err){
+          // Tolerate "already gone" -- if the startup backup and the
+          // close-time backup ever both try to prune the same old file
+          // (shouldn't happen now that enqueueBackup serializes them, but
+          // cheap insurance), the second delete would otherwise fail and
+          // surface a misleading "backup didn't complete" toast even
+          // though the backup itself wrote fine.
+          var msg = (err && err.message) || String(err);
+          if(/not found|no such file|cannot find/i.test(msg)) return;
+          throw err;
+        });
       });
     });
+  }
+
+  // Serializes the two backup write paths (the startup fill-in and the
+  // close-time overwrite) so they can never run concurrently against the
+  // same day's file. @tauri-apps/plugin-fs's writeTextFile is a plain
+  // open/truncate/write, not an atomic temp-file-plus-rename -- if both
+  // paths fire close together (e.g. open the app, glance at something,
+  // close it again within a couple seconds) they'd otherwise both write
+  // backup-<today>.json at once, risking an interleaved/truncated file.
+  // An audit surfaced this as a direct sibling of the v0.1.38 close-handler
+  // bug: another case of async work whose ordering wasn't actually
+  // guaranteed.
+  var _backupChain = Promise.resolve();
+  function enqueueBackup(fn){
+    var p = _backupChain.catch(function(){}).then(fn);
+    _backupChain = p.catch(function(){}); // one failed backup must never block the next one
+    return p;
   }
 
   function refreshAutoBackupStatusUi(){
@@ -12533,26 +12715,28 @@ var qrcode = function() {
   // surfaced as a toast (per the confirmed answer: warn, don't stay
   // silent) rather than ever blocking normal use of the app.
   function maybeRunAutomaticBackup(){
-    var folderPath;
-    var fileName = todaysBackupFileName();
-    return getBackupsFolderPath().then(function(p){
-      folderPath = p;
-      return window.__TAURI__.fs.mkdir(folderPath, {recursive: true});
-    }).then(function(){
-      return window.__TAURI__.path.join(folderPath, fileName);
-    }).then(function(filePath){
-      return window.__TAURI__.fs.exists(filePath).then(function(already){
-        if(already) return; // today's backup is already done
-        return buildBackupExportObject().then(function(exportObj){
-          return window.__TAURI__.fs.writeTextFile(filePath, JSON.stringify(exportObj, null, 2));
+    return enqueueBackup(function(){
+      var folderPath;
+      var fileName = todaysBackupFileName();
+      return getBackupsFolderPath().then(function(p){
+        folderPath = p;
+        return window.__TAURI__.fs.mkdir(folderPath, {recursive: true});
+      }).then(function(){
+        return window.__TAURI__.path.join(folderPath, fileName);
+      }).then(function(filePath){
+        return window.__TAURI__.fs.exists(filePath).then(function(already){
+          if(already) return; // today's backup is already done
+          return buildBackupExportObject().then(function(exportObj){
+            return window.__TAURI__.fs.writeTextFile(filePath, JSON.stringify(exportObj, null, 2));
+          });
         });
+      }).then(function(){
+        return listAutomaticBackups(folderPath);
+      }).then(function(names){
+        return pruneOldAutomaticBackups(folderPath, names);
+      }).then(function(){
+        refreshAutoBackupStatusUi();
       });
-    }).then(function(){
-      return listAutomaticBackups(folderPath);
-    }).then(function(names){
-      return pruneOldAutomaticBackups(folderPath, names);
-    }).then(function(){
-      refreshAutoBackupStatusUi();
     }).catch(function(err){
       console.error("Automatic backup failed", err);
       debugLog("maybeRunAutomaticBackup() FAILED: " + JSON.stringify(err) + " / " + (err && err.message));
@@ -12569,44 +12753,74 @@ var qrcode = function() {
   // this -- it's the fallback for a day that ends in a crash or power
   // loss instead of a normal close, where this handler never gets to run.
   function runEndOfDayBackup(){
-    var folderPath;
-    return getBackupsFolderPath().then(function(p){
-      folderPath = p;
-      return window.__TAURI__.fs.mkdir(folderPath, {recursive: true});
-    }).then(function(){
-      return buildBackupExportObject();
-    }).then(function(exportObj){
-      return window.__TAURI__.path.join(folderPath, todaysBackupFileName()).then(function(filePath){
-        return window.__TAURI__.fs.writeTextFile(filePath, JSON.stringify(exportObj, null, 2));
+    // Routed through enqueueBackup() -- see the note above it -- so this
+    // can never write the same day's file at the same instant as a
+    // startup backup that's still finishing up.
+    return enqueueBackup(function(){
+      var folderPath;
+      return getBackupsFolderPath().then(function(p){
+        folderPath = p;
+        return window.__TAURI__.fs.mkdir(folderPath, {recursive: true});
+      }).then(function(){
+        return buildBackupExportObject();
+      }).then(function(exportObj){
+        return window.__TAURI__.path.join(folderPath, todaysBackupFileName()).then(function(filePath){
+          return window.__TAURI__.fs.writeTextFile(filePath, JSON.stringify(exportObj, null, 2));
+        });
+      }).then(function(){
+        return listAutomaticBackups(folderPath);
+      }).then(function(names){
+        return pruneOldAutomaticBackups(folderPath, names);
       });
-    }).then(function(){
-      return listAutomaticBackups(folderPath);
-    }).then(function(names){
-      return pruneOldAutomaticBackups(folderPath, names);
     });
   }
 
+  // v0.1.38 REGRESSION FIX: this used to just return a promise from the
+  // handler without calling event.preventDefault(), on the assumption
+  // that Tauri would await it before closing anyway. That assumption was
+  // wrong in practice -- Tauri's own examples only ever call
+  // preventDefault() to BLOCK a close, and there is no documented
+  // guarantee that a handler which returns a promise without calling
+  // preventDefault() gets awaited before the window closes. In the field
+  // this made the window not close at all after opening the app on
+  // v0.1.38. Fixed to use the explicit, documented pattern instead:
+  // always call preventDefault() first (so Tauri never auto-closes on
+  // its own timing), run the backup ourselves bounded by a 5s timeout,
+  // and then force the window shut with destroy() -- NOT close(), because
+  // close() just re-requests a close and would re-enter this same
+  // handler in a loop. destroy() forces it immediately, once.
+  //
   // Registered once, as early as possible (doesn't need data loaded to
   // start listening) -- but the backup itself only runs if the app
   // actually finished starting (appStartedOnce), so closing the app from
   // the license lock screen never overwrites a real backup with empty
-  // placeholder data. Deliberately does NOT call event.preventDefault():
-  // the handler is awaited before the window proceeds to close either
-  // way, so this only delays the close briefly rather than blocking it,
-  // and Promise.race with a timeout guarantees the app is always closable
-  // even if the backup write is somehow stuck (a full disk, a locked
-  // Documents folder, etc.) -- the app closing on time must never depend
-  // on a backup succeeding.
+  // placeholder data, and in that case we don't preventDefault at all --
+  // the window just closes immediately, same as before this feature existed.
   if(window.__TAURI__ && window.__TAURI__.window){
-    window.__TAURI__.window.getCurrentWindow().onCloseRequested(function(){
-      if(!appStartedOnce) return;
-      return Promise.race([
+    var _closeWin = window.__TAURI__.window.getCurrentWindow();
+    // Re-entrancy guard: without this, clicking the OS close button (or
+    // pressing Alt+F4) twice in quick succession before destroy() fires
+    // would re-enter this handler and kick off a SECOND end-of-day backup
+    // concurrently with the first -- both racing to write the same file.
+    var _closeInProgress = false;
+    _closeWin.onCloseRequested(function(event){
+      if(!appStartedOnce) return; // let it close immediately, no backup attempted yet
+      if(_closeInProgress){ event.preventDefault(); return; } // already closing -- ignore the repeat request
+      _closeInProgress = true;
+      event.preventDefault();
+      Promise.race([
         runEndOfDayBackup().catch(function(err){
           console.error("End-of-day backup failed", err);
           debugLog("runEndOfDayBackup() FAILED: " + JSON.stringify(err) + " / " + (err && err.message));
         }),
         sleep(5000) // never let a stuck backup delay closing the app for more than 5s
-      ]);
+      ]).catch(function(err){
+        console.error("Unexpected error while closing after end-of-day backup", err);
+      }).then(function(){
+        return _closeWin.destroy();
+      }).catch(function(err){
+        console.error("Failed to force-close window after end-of-day backup", err);
+      });
     }).catch(function(err){
       console.error("Could not register end-of-day backup on window close", err);
     });
@@ -12670,6 +12884,24 @@ var qrcode = function() {
   }
 
   /* ================= INIT ================= */
+  // Shared by every dataReadyPromise consumer in this file (the INIT block
+  // below, and the license-activation success handler above) -- an audit
+  // found the activation handler used to consume dataReadyPromise with a
+  // bare .then() and no .catch() at all. If the DB load hard-fails right
+  // after a device successfully activates a license (lock screen already
+  // hidden), that bare .then() would just never fire -- a blank, silently
+  // frozen app shell, with only this alert as a clue if it happens to fire
+  // from the OTHER (INIT block) consumer racing it. Now both consumers
+  // funnel into the exact same handling, so there's only one way this
+  // failure is ever handled, not two that can diverge.
+  function onDataReadyFailed(err){
+    console.error("Failed to load data on startup", err);
+    debugLog("dataReadyPromise REJECTED: " + JSON.stringify(err) + " / " + (err && err.message));
+    try{
+      alert("Could not load the local database on startup:\n\n" + (err && err.message ? err.message : err) +
+        "\n\nYour existing data has NOT been touched. Please note this exact message and contact support.");
+    }catch(e){}
+  }
   // Show the lock screen immediately if needed (it doesn't need data to be
   // loaded yet), but only call startApp() once dataReadyPromise resolves.
   if(!isLicensed()){
@@ -12684,20 +12916,7 @@ var qrcode = function() {
       maybeRecheckLicense();
       setTimeout(maybeCheckForUpdate, 5000);
     }
-  }).catch(function(err){
-    // Previously this promise had no .catch at all -- if loadData() ever
-    // rejected (e.g. the SQLite database failed to open), the app would
-    // silently never call startApp() and just sit on a blank/lock screen
-    // with no visible error, and this failure would also never be logged
-    // anywhere a release build's user could see. Surface it loudly so a
-    // storage failure is never mistaken for "the app just isn't loading".
-    console.error("Failed to load data on startup", err);
-    debugLog("dataReadyPromise REJECTED: " + JSON.stringify(err) + " / " + (err && err.message));
-    try{
-      alert("Could not load the local database on startup:\n\n" + (err && err.message ? err.message : err) +
-        "\n\nYour existing data has NOT been touched. Please note this exact message and contact support.");
-    }catch(e){}
-  });
+  }).catch(onDataReadyFailed);
 })();
 
 /* ================= PWA INSTALL SUPPORT ================= */
