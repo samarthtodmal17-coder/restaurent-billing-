@@ -2503,7 +2503,17 @@
         <button class="btn secondary" id="btnImportData">Import Backup</button>
       </div>
       <input type="file" id="importFile" accept=".json" style="display:none;">
-      <button class="btn danger" id="btnResetData" style="margin-top:10px;">Erase All Data</button>
+
+      <div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--border);">
+        <p class="muted" style="margin:0 0 6px 0;">Automatic backups: a dated copy is saved to your Documents folder on its own, with nothing to click -- refreshed with the full day's data when you close the app, and made fresh on opening if that day's backup is still missing (e.g. after a crash). A safety net alongside the manual export above. Kept for the last 7 days.</p>
+        <p class="muted" id="autoBackupStatusText" style="margin:0 0 8px 0;"></p>
+        <div class="row">
+          <select id="autoBackupList" style="flex:1;"></select>
+          <button class="btn secondary" id="btnRestoreAutoBackup" type="button">Restore Selected Backup</button>
+        </div>
+      </div>
+
+      <button class="btn danger" id="btnResetData" style="margin-top:14px;">Erase All Data</button>
     </div>
 
     <div class="card settings-full" id="cardStaffAccounts">
@@ -4889,7 +4899,7 @@ var qrcode = function() {
      ============================================================ */
   var LICENSE_API_BASE = "https://licensing-platform.pages.dev"; // set to the real deployed licensing-platform URL
   var PRODUCT_ID = "restaurant-pos";
-  var APP_VERSION = "0.1.33";
+  var APP_VERSION = "0.1.38";
   var DB_VERSION = "1";
   var LICENSED_TO = "";
 
@@ -5366,20 +5376,24 @@ var qrcode = function() {
     var msg = (err && err.message) ? err.message : (typeof err === "string" ? err : JSON.stringify(err || ""));
     return /database is locked/i.test(msg) || /transaction within a transaction/i.test(msg);
   }
-  function doSaveWithRetry(attemptsLeft){
-    return doSave().catch(function(err){
+  function doSaveWithRetry(attemptsLeft, options){
+    return doSave(options).catch(function(err){
       if(attemptsLeft > 0 && isTransientDbError(err)){
         debugLog("doSave() hit a transient error, retrying (" + attemptsLeft + " attempts left): " + (err && err.message));
-        return sleep(150).then(function(){ return doSaveWithRetry(attemptsLeft - 1); });
+        return sleep(150).then(function(){ return doSaveWithRetry(attemptsLeft - 1, options); });
       }
       throw err;
     });
   }
 
   var _saveChain = Promise.resolve();
-  function saveData(){
+  // `options.allowMenuWipe` -- see the guard at the top of doSave() below.
+  // Every call site except the explicit "Erase All Menu" button omits
+  // this, which is the point: it's an opt-IN for the one legitimate way
+  // to intentionally empty the menu, not something routine saves pass.
+  function saveData(options){
     itemCodeIndexCache = null;
-    _saveChain = _saveChain.then(function(){ return doSaveWithRetry(4); }).then(function(){
+    _saveChain = _saveChain.then(function(){ return doSaveWithRetry(4, options); }).then(function(){
       debugLog("doSave() completed OK");
     }).catch(function(err){
       // NOTE: this catch swallows the error and lets _saveChain continue
@@ -5393,11 +5407,71 @@ var qrcode = function() {
       // finally visible somewhere.
       console.error("SQLite save failed", err);
       debugLog("doSave() FAILED: " + JSON.stringify(err) + " / " + (err && err.message));
+      // Previously this was ONLY logged -- invisible in a release build,
+      // so a genuinely persistent failure (not a passing lock, an actual
+      // problem: a closed connection, a bad column, a permissions error,
+      // or the deliberate refusal below) could silently drop every save
+      // for the rest of the session while the screen looked completely
+      // normal. Now the person at the counter is told directly, so they
+      // stop and get help instead of continuing to work on top of
+      // changes that never reached disk.
+      showToast(err && err.userMessage ? err.userMessage :
+        "Could not save your last change. Please close and reopen the app; if this keeps happening, export a backup from Settings and contact support.");
     });
     return _saveChain;
   }
 
-  function doSave(){
+  // Builds "$1,$2,$3..." for a parameterized IN/NOT IN list of the given length.
+  function idPlaceholders(n){
+    var arr = [];
+    for(var i = 1; i <= n; i++) arr.push("$" + i);
+    return arr.join(",");
+  }
+  // Deletes rows from `table` whose id is NOT in currentIds -- i.e. rows
+  // that are genuinely no longer present in memory. Called only AFTER
+  // every current row has already been upserted (see doSave() below), so
+  // this never removes a row before its replacement is safely on disk.
+  function deleteMissingIds(db, table, currentIds){
+    if(!currentIds.length) return db.execute("DELETE FROM " + table);
+    return db.execute("DELETE FROM " + table + " WHERE id NOT IN (" + idPlaceholders(currentIds.length) + ")", currentIds);
+  }
+  // Same idea as deleteMissingIds, but for child/line-item tables that
+  // don't have a stable id from the JS side (order_items, bill_items,
+  // credit_payment_allocations use AUTOINCREMENT ids) -- so instead of
+  // matching by id, this removes every child row whose parent foreign key
+  // is no longer in keepParentIds.
+  function deleteOrphanChildren(db, table, fkColumn, keepParentIds){
+    if(!keepParentIds.length) return db.execute("DELETE FROM " + table);
+    return db.execute("DELETE FROM " + table + " WHERE " + fkColumn + " NOT IN (" + idPlaceholders(keepParentIds.length) + ")", keepParentIds);
+  }
+
+  // Refuses a save that would erase an existing, populated menu down to
+  // zero -- unless it's explicitly the "Erase All Menu" button (the only
+  // legitimate way to intentionally empty it), which passes
+  // {allowMenuWipe: true}. This is deliberately independent of WHY
+  // data.menuItems might be empty: it catches any future bug of this
+  // shape, not just the specific loadData() failure already fixed in
+  // v0.1.33 -- if disk currently has menu items and memory doesn't, that
+  // mismatch itself is the signal, regardless of cause. Aborts the WHOLE
+  // save (not just the menu part), since a suspiciously-empty menu often
+  // means the rest of `data` is suspect too (the original bug emptied
+  // everything at once, not just the menu).
+  function ensureMenuWipeAllowed(db, options){
+    if(options.allowMenuWipe) return Promise.resolve();
+    if(data.menuItems && data.menuItems.length > 0) return Promise.resolve();
+    return db.select("SELECT COUNT(*) AS c FROM menu_items").then(function(rows){
+      var existingCount = (rows[0] && rows[0].c) || 0;
+      if(existingCount > 0){
+        var err = new Error("Refused to save: menu is empty in memory but " + existingCount + " item(s) exist on disk.");
+        err.userMessage = "This save was blocked to protect your menu -- it would have erased " + existingCount +
+          " existing item(s) down to zero. If you really want an empty menu, use \"Erase All Menu\" in Settings instead.";
+        throw err;
+      }
+    });
+  }
+
+  function doSave(options){
+    options = options || {};
     // IMPORTANT: no BEGIN/COMMIT/ROLLBACK here. tauri-plugin-sql's
     // db.execute() acquires a connection from an internal sqlx pool
     // FRESH on every single call (confirmed by reading the plugin's own
@@ -5408,12 +5482,31 @@ var qrcode = function() {
     // start a transaction within a transaction" errors seen in testing
     // (menu items sometimes saved, bills often didn't -- pure luck of
     // which pooled connection each call happened to get). Each statement
-    // below now auto-commits individually, which is reliable with this
-    // plugin's architecture. Trade-off: a mid-save crash could leave
-    // some tables updated and others not, instead of an all-or-nothing
-    // transaction -- an acceptable cost given the alternative was saves
-    // failing outright on every bill.
+    // below now auto-commits individually.
+    //
+    // CRASH-SAFETY REDESIGN: every table below used to be a blanket
+    // "DELETE FROM x" followed by a loop of INSERTs rebuilding it from
+    // scratch. That meant a crash, force-quit, or power loss ANY time
+    // between the DELETE and the loop finishing left that table (and
+    // everything after it in the chain) missing rows the user never
+    // actually removed -- and because the NEXT save resyncs from that
+    // now-smaller table, the loss became permanent. Same failure shape as
+    // the loadData() bug fixed in v0.1.33, just triggered by a crash
+    // instead of a load error. Fix: every id-keyed table now upserts
+    // (INSERT OR REPLACE) each current row FIRST, and only deletes rows
+    // that are genuinely gone -- and only as the LAST step for that
+    // table, once every current row is already durably on disk. A crash
+    // mid-loop leaves already-processed rows updated and not-yet-reached
+    // rows exactly as they were, never removed before their replacement
+    // exists. Child/line-item tables without stable ids (order_items,
+    // bill_items, bill_edit_history, credit_payment_allocations) delete
+    // just their own parent's rows right next to that parent's own
+    // upsert, instead of one blanket delete for the whole table up front
+    // -- so a crash's blast radius is bounded to the one record being
+    // saved at that moment, not every bill or order ever created.
     return getDb().then(function(db){
+      return ensureMenuWipeAllowed(db, options).then(function(){ return db; });
+    }).then(function(db){
       var biz = data.business;
       return db.execute(
         "UPDATE business_settings SET name=$1, logo=$2, address=$3, phone=$4, footer=$5, currency=$6, " +
@@ -5426,67 +5519,82 @@ var qrcode = function() {
          biz.kotPaperWidth, biz.kotPaperWidthCustom, biz.packingChargeType, biz.packingChargeValue,
          biz.rawBtAutoPrint ? 1 : 0, biz.dailySeq, biz.lastBillDateKey, biz.upiId, biz.showUpiQr ? 1 : 0]
       )
-      .then(function(){ return db.execute("DELETE FROM categories"); })
       .then(function(){ return runSequential(data.categories, function(c, i){
-        return db.execute("INSERT INTO categories (id, name, sort_order) VALUES ($1,$2,$3)", [c.id, c.name, i]);
+        return db.execute("INSERT OR REPLACE INTO categories (id, name, sort_order) VALUES ($1,$2,$3)", [c.id, c.name, i]);
       }); })
-      .then(function(){ return db.execute("DELETE FROM subcategories"); })
+      .then(function(){ return deleteMissingIds(db, "categories", data.categories.map(function(c){ return c.id; })); })
+
       .then(function(){ return runSequential(data.subcategories, function(s){
-        return db.execute("INSERT INTO subcategories (id, category_id, name) VALUES ($1,$2,$3)", [s.id, s.categoryId || null, s.name]);
+        return db.execute("INSERT OR REPLACE INTO subcategories (id, category_id, name) VALUES ($1,$2,$3)", [s.id, s.categoryId || null, s.name]);
       }); })
-      .then(function(){ return db.execute("DELETE FROM tables"); })
+      .then(function(){ return deleteMissingIds(db, "subcategories", data.subcategories.map(function(s){ return s.id; })); })
+
       .then(function(){ return runSequential(data.tables, function(t, i){
-        return db.execute("INSERT INTO tables (id, name, sort_order) VALUES ($1,$2,$3)", [t.id, t.name, i]);
+        return db.execute("INSERT OR REPLACE INTO tables (id, name, sort_order) VALUES ($1,$2,$3)", [t.id, t.name, i]);
       }); })
-      .then(function(){ return db.execute("DELETE FROM staff_accounts"); })
+      .then(function(){ return deleteMissingIds(db, "tables", data.tables.map(function(t){ return t.id; })); })
+
       .then(function(){ return runSequential(data.staffAccounts || [], function(s){
-        return db.execute("INSERT INTO staff_accounts (id, name, pin, role, created_at) VALUES ($1,$2,$3,$4,$5)",
+        return db.execute("INSERT OR REPLACE INTO staff_accounts (id, name, pin, role, created_at) VALUES ($1,$2,$3,$4,$5)",
           [s.id, s.name, s.pin, s.role || "staff", s.createdAt || new Date().toISOString()]);
       }); })
-      // Inventory & Stock Management: menu_item_recipes is deleted first
-      // since it has FK references into both menu_items and
-      // inventory_items -- then inventory_items itself is rewritten before
-      // the menu items loop below re-inserts recipe rows that reference it.
-      .then(function(){ return db.execute("DELETE FROM menu_item_recipes"); })
-      .then(function(){ return db.execute("DELETE FROM inventory_items"); })
+      .then(function(){ return deleteMissingIds(db, "staff_accounts", (data.staffAccounts || []).map(function(s){ return s.id; })); })
+
       .then(function(){ return runSequential(data.inventoryItems || [], function(inv){
         return db.execute(
-          "INSERT INTO inventory_items (id, name, category, unit_type, unit_label, current_stock, reorder_threshold, last_purchase_cost, archived, created_at) " +
+          "INSERT OR REPLACE INTO inventory_items (id, name, category, unit_type, unit_label, current_stock, reorder_threshold, last_purchase_cost, archived, created_at) " +
           "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)",
           [inv.id, inv.name, inv.category || "", inv.unitType || "count", inv.unitLabel || "pcs",
            inv.currentStock || 0, inv.reorderThreshold || 0, inv.lastPurchaseCost || 0, 0,
            inv.createdAt || new Date().toISOString()]
         );
       }); })
-      .then(function(){ return db.execute("DELETE FROM menu_item_variants"); })
-      .then(function(){ return db.execute("DELETE FROM menu_items"); })
-      .then(function(){ return runSequential(data.menuItems, function(m){
-        return db.execute(
-          "INSERT INTO menu_items (id, code, name, category_id, subcategory_id, price, tax_percent, photo, send_to_kitchen, favorite, out_of_stock) " +
-          "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)",
-          [m.id, m.code || null, m.name, m.categoryId || null, m.subcategoryId || null,
-           m.variants ? null : (m.price != null ? m.price : null), m.taxPercent != null ? m.taxPercent : null,
-           m.photo || null, m.sendToKitchen === undefined ? null : (m.sendToKitchen ? 1 : 0),
-           m.favorite ? 1 : 0, m.outOfStock ? 1 : 0]
-        ).then(function(){
-          if(!m.variants || !m.variants.length) return;
-          return runSequential(m.variants, function(v, i){
-            return db.execute("INSERT INTO menu_item_variants (id, menu_item_id, label, price, sort_order) VALUES ($1,$2,$3,$4,$5)",
-              [m.id + "-v" + i, m.id, v.label, v.price, i]);
+      .then(function(){ return deleteMissingIds(db, "inventory_items", (data.inventoryItems || []).map(function(inv){ return inv.id; })); })
+
+      .then(function(){
+        // menu_item_variants/menu_item_recipes ids are deterministic
+        // (menuItemId + "-v"/"-r" + index), so their cleanup deletes can
+        // use the same id-based approach as top-level tables -- just
+        // gathered across the whole menuItems loop before running once.
+        var variantIds = [];
+        var recipeIds = [];
+        return runSequential(data.menuItems, function(m){
+          return db.execute(
+            "INSERT OR REPLACE INTO menu_items (id, code, name, category_id, subcategory_id, price, tax_percent, photo, send_to_kitchen, favorite, out_of_stock) " +
+            "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)",
+            [m.id, m.code || null, m.name, m.categoryId || null, m.subcategoryId || null,
+             m.variants ? null : (m.price != null ? m.price : null), m.taxPercent != null ? m.taxPercent : null,
+             m.photo || null, m.sendToKitchen === undefined ? null : (m.sendToKitchen ? 1 : 0),
+             m.favorite ? 1 : 0, m.outOfStock ? 1 : 0]
+          ).then(function(){
+            if(!m.variants || !m.variants.length) return;
+            return runSequential(m.variants, function(v, i){
+              var vid = m.id + "-v" + i;
+              variantIds.push(vid);
+              return db.execute("INSERT OR REPLACE INTO menu_item_variants (id, menu_item_id, label, price, sort_order) VALUES ($1,$2,$3,$4,$5)",
+                [vid, m.id, v.label, v.price, i]);
+            });
+          }).then(function(){
+            if(!m.recipe || !m.recipe.length) return;
+            return runSequential(m.recipe, function(rc, i){
+              var rid = m.id + "-r" + i;
+              recipeIds.push(rid);
+              return db.execute("INSERT OR REPLACE INTO menu_item_recipes (id, menu_item_id, inventory_item_id, quantity_per_unit, sort_order) VALUES ($1,$2,$3,$4,$5)",
+                [rid, m.id, rc.inventoryItemId, rc.quantityPerUnit || 0, i]);
+            });
           });
         }).then(function(){
-          if(!m.recipe || !m.recipe.length) return;
-          return runSequential(m.recipe, function(rc, i){
-            return db.execute("INSERT INTO menu_item_recipes (id, menu_item_id, inventory_item_id, quantity_per_unit, sort_order) VALUES ($1,$2,$3,$4,$5)",
-              [m.id + "-r" + i, m.id, rc.inventoryItemId, rc.quantityPerUnit || 0, i]);
-          });
+          return deleteMissingIds(db, "menu_items", data.menuItems.map(function(m){ return m.id; }));
+        }).then(function(){
+          return deleteMissingIds(db, "menu_item_variants", variantIds);
+        }).then(function(){
+          return deleteMissingIds(db, "menu_item_recipes", recipeIds);
         });
-      }); })
-      .then(function(){ return db.execute("DELETE FROM order_items"); })
-      .then(function(){ return db.execute("DELETE FROM open_orders"); })
+      })
+
       .then(function(){ return runSequential(data.openOrders, function(o){
         return db.execute(
-          "INSERT INTO open_orders (id, table_id, table_name, customer, customer_phone, discount_value, discount_type, " +
+          "INSERT OR REPLACE INTO open_orders (id, table_id, table_name, customer, customer_phone, discount_value, discount_type, " +
           "payment_mode, split_enabled, split_payments, is_parcel, packing_charge_override, kot_sent, editing_bill_id, created_at, cancelled_session) " +
           "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)",
           [o.id, o.tableId || null, o.table || "", o.customer || "", o.customerPhone || "", o.discountValue || 0,
@@ -5495,15 +5603,19 @@ var qrcode = function() {
            o.packingChargeOverride != null ? o.packingChargeOverride : null, JSON.stringify(o.kotSent || {}),
            o.editingBillId || null, o.createdAt, o.cancelledSession ? JSON.stringify(o.cancelledSession) : null]
         ).then(function(){
+          // Scoped to just this order, not a blanket delete for every
+          // open order's items -- see the crash-safety note above.
+          return db.execute("DELETE FROM order_items WHERE order_id = $1", [o.id]);
+        }).then(function(){
           return runSequential(o.items || [], function(it, i){ return insertLineItem(db, "order_items", "order_id", o.id, it, i); });
         });
       }); })
-      .then(function(){ return db.execute("DELETE FROM bill_items"); })
-      .then(function(){ return db.execute("DELETE FROM bill_edit_history"); })
-      .then(function(){ return db.execute("DELETE FROM bills"); })
+      .then(function(){ return deleteMissingIds(db, "open_orders", data.openOrders.map(function(o){ return o.id; })); })
+      .then(function(){ return deleteOrphanChildren(db, "order_items", "order_id", data.openOrders.map(function(o){ return o.id; })); })
+
       .then(function(){ return runSequential(data.bills, function(b){
         return db.execute(
-          "INSERT INTO bills (id, bill_no, date, table_id, table_name, customer, customer_phone, payment_mode, " +
+          "INSERT OR REPLACE INTO bills (id, bill_no, date, table_id, table_name, customer, customer_phone, payment_mode, " +
           "split_payments, is_credit, credit_paid, subtotal, discount_amount, discount_value, discount_type, tax_label, " +
           "tax_percent, tax, tax_by_rate, service_charge_percent, service, is_parcel, packing_charge, total, currency, edited_at, edited_by, " +
           "cancelled_items_json, cancelled_reason) " +
@@ -5516,7 +5628,12 @@ var qrcode = function() {
            b.service || 0, b.isParcel ? 1 : 0, b.packingCharge || 0, b.total || 0, b.currency || null, b.editedAt || null,
            b.editedBy || null, b.cancelledItems ? JSON.stringify(b.cancelledItems) : null, b.cancelledReason || null]
         ).then(function(){
+          // Scoped to just this bill -- see the crash-safety note above.
+          return db.execute("DELETE FROM bill_items WHERE bill_id = $1", [b.id]);
+        }).then(function(){
           return runSequential(b.items || [], function(it, i){ return insertLineItem(db, "bill_items", "bill_id", b.id, it, i); });
+        }).then(function(){
+          return db.execute("DELETE FROM bill_edit_history WHERE bill_id = $1", [b.id]);
         }).then(function(){
           if(!b.editHistory || !b.editHistory.length) return;
           return runSequential(b.editHistory, function(h){
@@ -5529,30 +5646,40 @@ var qrcode = function() {
           });
         });
       }); })
-      .then(function(){ return db.execute("DELETE FROM deleted_bills_log"); })
+      .then(function(){ return deleteMissingIds(db, "bills", data.bills.map(function(b){ return b.id; })); })
+      .then(function(){ return deleteOrphanChildren(db, "bill_items", "bill_id", data.bills.map(function(b){ return b.id; })); })
+      .then(function(){ return deleteOrphanChildren(db, "bill_edit_history", "bill_id", data.bills.map(function(b){ return b.id; })); })
+
       .then(function(){ return runSequential(data.deletedBillsLog, function(d){
-        return db.execute("INSERT INTO deleted_bills_log (id, original_bill_id, deleted_at, bill_snapshot) VALUES ($1,$2,$3,$4)",
+        return db.execute("INSERT OR REPLACE INTO deleted_bills_log (id, original_bill_id, deleted_at, bill_snapshot) VALUES ($1,$2,$3,$4)",
           [d.id, d.originalBillId || null, d.deletedAt, JSON.stringify(d)]);
       }); })
+      .then(function(){ return deleteMissingIds(db, "deleted_bills_log", data.deletedBillsLog.map(function(d){ return d.id; })); })
+
       // Anti-theft audit trail -- same blob-resync pattern as
       // deleted_bills_log just above (see migrations/0004_cleared_orders_log.sql).
-      .then(function(){ return db.execute("DELETE FROM cleared_orders_log"); })
       .then(function(){ return runSequential(data.clearedOrdersLog, function(entry){
-        return db.execute("INSERT INTO cleared_orders_log (id, cleared_at, entry_json) VALUES ($1,$2,$3)",
+        return db.execute("INSERT OR REPLACE INTO cleared_orders_log (id, cleared_at, entry_json) VALUES ($1,$2,$3)",
           [entry.id, entry.clearedAt, JSON.stringify(entry)]);
       }); })
-      .then(function(){ return db.execute("DELETE FROM credit_payment_allocations"); })
-      .then(function(){ return db.execute("DELETE FROM credit_payments"); })
+      .then(function(){ return deleteMissingIds(db, "cleared_orders_log", data.clearedOrdersLog.map(function(entry){ return entry.id; })); })
+
       .then(function(){ return runSequential(data.creditPayments, function(c){
-        return db.execute("INSERT INTO credit_payments (id, account_key, name, phone, amount, mode, note, date) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)",
+        return db.execute("INSERT OR REPLACE INTO credit_payments (id, account_key, name, phone, amount, mode, note, date) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)",
           [c.id, c.key || null, c.name || null, c.phone || null, c.amount || 0, c.mode || null, c.note || null, c.date]
         ).then(function(){
+          // Scoped to just this credit account -- see the crash-safety note above.
+          return db.execute("DELETE FROM credit_payment_allocations WHERE credit_payment_id = $1", [c.id]);
+        }).then(function(){
           return runSequential(c.allocations || [], function(a){
             return db.execute("INSERT INTO credit_payment_allocations (credit_payment_id, bill_id, bill_no, amount) VALUES ($1,$2,$3,$4)",
               [c.id, a.billId, a.billNo, a.amount]);
           });
         });
       }); })
+      .then(function(){ return deleteMissingIds(db, "credit_payments", data.creditPayments.map(function(c){ return c.id; })); })
+      .then(function(){ return deleteOrphanChildren(db, "credit_payment_allocations", "credit_payment_id", data.creditPayments.map(function(c){ return c.id; })); })
+
       .then(function(){
         return db.execute("UPDATE counters SET value=$1 WHERE key='next_item_code'", [data.nextItemCode || 101]);
       });
@@ -6180,6 +6307,50 @@ var qrcode = function() {
     document.getElementById("importFile").click();
   });
 
+  // Shared by the file-picker Import above and "Restore Selected Backup"
+  // (automatic backups) below, so both restore paths behave identically.
+  // `imported` is a parsed backup object (mergeWithDefaults() shape plus
+  // the two inventory ledger arrays riding along, same as
+  // buildBackupExportObject() produces).
+  function restoreFromBackupObject(imported, successMessage){
+    var importedPurchases = imported.inventoryPurchases || [];
+    var importedStockLog = imported.inventoryStockLog || [];
+    delete imported.inventoryPurchases;
+    delete imported.inventoryStockLog;
+    // Wait for any save already in flight to finish before swapping
+    // `data` out from under it. doSave() reads the live `data` variable
+    // at each step of its (multi-table) promise chain, not a snapshot
+    // taken when the save started -- reassigning `data` while an earlier
+    // save is still mid-flight could write a mix of pre- and post-import
+    // data across different tables. _saveChain never rejects (see
+    // saveData()'s own .catch), so this always resolves.
+    return _saveChain.then(function(){
+      data = mergeWithDefaults(imported); // fills in any fields missing from an older/partial backup (e.g. subcategories)
+      activeOrderId = null;
+      ensureItemCodes();
+      renderHeader();
+      renderSettingsScreen();
+      renderBillingScreen();
+      // Wait for this save to actually finish before starting the ledger
+      // restore -- running them at the same time means both compete for
+      // the same pooled SQLite connections, which is exactly the kind of
+      // contention that produces the transient "database is locked"
+      // errors elsewhere in this file.
+      // Explicit, confirmed whole-dataset restore -- the backup file's
+      // own menu (even if legitimately empty, e.g. a backup taken before
+      // any menu existed) is what should end up on disk, not blocked by
+      // the save guard meant to catch an ACCIDENTALLY empty menu.
+      return saveData({allowMenuWipe: true}).then(function(){
+        return restoreInventoryLedgers(importedPurchases, importedStockLog);
+      });
+    }).then(function(){
+      showToast(successMessage);
+    }).catch(function(err){
+      console.error("Restoring inventory purchase/stock history failed", err);
+      showToast(successMessage + ", but purchase/stock history could not be restored");
+    });
+  }
+
   document.getElementById("importFile").addEventListener("change", function(e){
     var file = e.target.files[0];
     if(!file) return;
@@ -6187,28 +6358,7 @@ var qrcode = function() {
     reader.onload = function(ev){
       try{
         var imported = JSON.parse(ev.target.result);
-        // inventory_purchases/inventory_stock_log ride along in the JSON
-        // as two extra top-level arrays (see exportBackupNow above), not
-        // as part of the blob mergeWithDefaults() deals with -- pull them
-        // out first so they don't get silently dropped, then restore them
-        // separately via restoreInventoryLedgers().
-        var importedPurchases = imported.inventoryPurchases || [];
-        var importedStockLog = imported.inventoryStockLog || [];
-        delete imported.inventoryPurchases;
-        delete imported.inventoryStockLog;
-        data = mergeWithDefaults(imported); // fills in any fields missing from an older backup (e.g. subcategories)
-        activeOrderId = null;
-        ensureItemCodes();
-        saveData();
-        renderHeader();
-        renderSettingsScreen();
-        renderBillingScreen();
-        restoreInventoryLedgers(importedPurchases, importedStockLog).then(function(){
-          showToast("Backup imported successfully");
-        }).catch(function(err){
-          console.error("Restoring inventory purchase/stock history failed", err);
-          showToast("Backup imported, but purchase/stock history could not be restored");
-        });
+        restoreFromBackupObject(imported, "Backup imported successfully");
       }catch(err){
         showToast("Invalid backup file");
       }
@@ -6220,15 +6370,22 @@ var qrcode = function() {
   document.getElementById("btnResetData").addEventListener("click", function(){
     if(confirm("This will permanently erase all menu items, bills, and settings on this device. Continue?")){
       try{ localStorage.removeItem(STORAGE_KEY); }catch(e){}
-      data = JSON.parse(JSON.stringify(defaultData));
-      activeOrderId = null;
-      saveData(); // writes the freshly-reset defaults into IndexedDB (or the localStorage fallback)
-      renderHeader();
-      renderSettingsScreen();
-      renderMenuScreen();
-      renderBillingScreen();
-      renderHistory();
-      showToast("All data erased");
+      // Same reasoning as Import above: wait out any save already in
+      // flight before swapping `data` for a blank default object, so a
+      // save that's mid-write doesn't end up mixing old and new data.
+      _saveChain.then(function(){
+        data = JSON.parse(JSON.stringify(defaultData));
+        activeOrderId = null;
+        // Explicit, confirmed "erase everything" action -- same
+        // reasoning as Erase All Menu above.
+        saveData({allowMenuWipe: true});
+        renderHeader();
+        renderSettingsScreen();
+        renderMenuScreen();
+        renderBillingScreen();
+        renderHistory();
+        showToast("All data erased");
+      });
     }
   });
 
@@ -7442,7 +7599,11 @@ var qrcode = function() {
         data.subcategories = imported.subcategories || [];
         data.menuItems = imported.menuItems || [];
         ensureItemCodes();
-        saveData();
+        // Explicit, confirmed replace-the-whole-menu action (same as
+        // Erase All below) -- a deliberately empty import file is a
+        // legitimate, if unusual, choice here, not the accidental-empty
+        // case the save guard exists to catch.
+        saveData({allowMenuWipe: true});
         renderMenuScreen();
         renderBillingScreen();
         showToast("Menu imported");
@@ -7466,7 +7627,7 @@ var qrcode = function() {
     data.categories = [];
     data.subcategories = [];
     data.menuItems = [];
-    saveData();
+    saveData({allowMenuWipe: true});
     renderMenuScreen();
     renderBillingScreen();
     showToast("Menu erased");
@@ -8192,34 +8353,50 @@ var qrcode = function() {
   }
 
   // Only called from a full "Import Backup" restore (see the importFile
-  // change handler below) -- the one place wiping and rewriting
-  // inventory_purchases/inventory_stock_log wholesale is appropriate,
-  // since restoring a backup is meant to replace everything on this
-  // device, unlike doSave() which does that same wipe+rewrite pattern for
-  // the blob-backed tables on every single bill save (exactly why these
-  // two tables are kept out of doSave() to begin with).
-  function restoreInventoryLedgers(purchases, stockLog){
+  // change handler below) -- inventory_purchases has stable ids from the
+  // backup file, so it's upserted (INSERT OR REPLACE) then cleaned up of
+  // anything not in the import, same crash-safe pattern as doSave(); the
+  // old rows are never gone before their replacements are on disk.
+  // inventory_stock_log rows have no stable id (AUTOINCREMENT primary
+  // key), so it's still a delete-then-reinsert -- but since an import is
+  // a rare, deliberate, whole-device replace (not something that runs on
+  // every bill like doSave() does), and it now runs strictly after
+  // purchases are already safely upserted, that's an acceptable
+  // trade-off rather than a schema change.
+  function restoreInventoryLedgersAttempt(purchases, stockLog){
     return getDb().then(function(db){
-      return db.execute("DELETE FROM inventory_purchases")
-        .then(function(){ return db.execute("DELETE FROM inventory_stock_log"); })
-        .then(function(){
-          return runSequential(purchases || [], function(p){
-            return db.execute(
-              "INSERT INTO inventory_purchases (id, item_id, supplier_name, quantity, unit_cost, total_cost, purchase_date, notes, created_at) " +
-              "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)",
-              [p.id, p.item_id, p.supplier_name || "", p.quantity, p.unit_cost, p.total_cost, p.purchase_date, p.notes || "", p.created_at]
-            );
-          });
-        })
-        .then(function(){
-          return runSequential(stockLog || [], function(l){
-            return db.execute(
-              "INSERT INTO inventory_stock_log (item_id, change_qty, reason, reference_bill_id, reference_purchase_id, notes, created_at) " +
-              "VALUES ($1,$2,$3,$4,$5,$6,$7)",
-              [l.item_id, l.change_qty, l.reason, l.reference_bill_id || null, l.reference_purchase_id || null, l.notes || "", l.created_at]
-            );
-          });
+      return runSequential(purchases || [], function(p){
+        return db.execute(
+          "INSERT OR REPLACE INTO inventory_purchases (id, item_id, supplier_name, quantity, unit_cost, total_cost, purchase_date, notes, created_at) " +
+          "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)",
+          [p.id, p.item_id, p.supplier_name || "", p.quantity, p.unit_cost, p.total_cost, p.purchase_date, p.notes || "", p.created_at]
+        );
+      })
+      .then(function(){ return deleteMissingIds(db, "inventory_purchases", (purchases || []).map(function(p){ return p.id; })); })
+      .then(function(){ return db.execute("DELETE FROM inventory_stock_log"); })
+      .then(function(){
+        return runSequential(stockLog || [], function(l){
+          return db.execute(
+            "INSERT INTO inventory_stock_log (item_id, change_qty, reason, reference_bill_id, reference_purchase_id, notes, created_at) " +
+            "VALUES ($1,$2,$3,$4,$5,$6,$7)",
+            [l.item_id, l.change_qty, l.reason, l.reference_bill_id || null, l.reference_purchase_id || null, l.notes || "", l.created_at]
+          );
         });
+      });
+    });
+  }
+
+  // Restoring can hit the same transient "database is locked" contention
+  // doSave() already retries for -- retry here too instead of letting one
+  // momentary lock erase the ledger with nothing but a toast to show for it.
+  function restoreInventoryLedgers(purchases, stockLog, attemptsLeft){
+    if(attemptsLeft === undefined) attemptsLeft = 4;
+    return restoreInventoryLedgersAttempt(purchases, stockLog).catch(function(err){
+      if(attemptsLeft > 0 && isTransientDbError(err)){
+        debugLog("restoreInventoryLedgers() hit a transient error, retrying (" + attemptsLeft + " attempts left): " + (err && err.message));
+        return sleep(150).then(function(){ return restoreInventoryLedgers(purchases, stockLog, attemptsLeft - 1); });
+      }
+      throw err;
     });
   }
 
@@ -12052,6 +12229,8 @@ var qrcode = function() {
     applyReceiptPrintStyle("receipt");
     updateLastExportStatusText();
     maybeShowBackupReminder();
+    refreshAutoBackupStatusUi();
+    maybeRunAutomaticBackup();
     applyRolePermissions();
     // Bill History defaults to Today (not All Dates) -- checking on
     // today's bills is the most common reason to open this screen, so it
@@ -12181,24 +12360,32 @@ var qrcode = function() {
   // when it happened, so both the Data card's status line and the
   // reminder banner know to stop nagging. Shared by the normal Export
   // button and the reminder banner's own "Export Now" shortcut.
-  function exportBackupNow(){
-    // inventory_purchases and inventory_stock_log are append-only ledgers,
-    // deliberately kept OUT of the in-memory `data` blob (see the note at
-    // the top of migrations/0002_inventory.sql) -- so a backup has to
-    // query them fresh at export time instead of just serializing `data`,
-    // or restoring this backup later would silently lose every purchase/
-    // wastage/sale-deduction ever logged even though inventory_items
-    // itself (which IS in the blob) would come back fine.
-    getDb().then(function(db){
+  // Shared by the manual Export button, the automatic daily backup, and
+  // restoring either one -- so all three ways of getting a backup out of
+  // (or into) this app always agree on its shape and never quietly drift
+  // apart. inventory_purchases and inventory_stock_log are append-only
+  // ledgers, deliberately kept OUT of the in-memory `data` blob (see the
+  // note at the top of migrations/0002_inventory.sql) -- so a backup has
+  // to query them fresh at export time instead of just serializing
+  // `data`, or restoring it later would silently lose every purchase/
+  // wastage/sale-deduction ever logged even though inventory_items itself
+  // (which IS in the blob) would come back fine.
+  function buildBackupExportObject(){
+    return getDb().then(function(db){
       return Promise.all([
         db.select("SELECT * FROM inventory_purchases"),
         db.select("SELECT * FROM inventory_stock_log")
       ]);
     }).then(function(results){
-      var exportObj = Object.assign({}, data, {
+      return Object.assign({}, data, {
         inventoryPurchases: results[0],
         inventoryStockLog: results[1]
       });
+    });
+  }
+
+  function exportBackupNow(){
+    buildBackupExportObject().then(function(exportObj){
       var blob = new Blob([JSON.stringify(exportObj, null, 2)], {type: "application/json"});
       var url = URL.createObjectURL(blob);
       var a = document.createElement("a");
@@ -12264,6 +12451,184 @@ var qrcode = function() {
   document.getElementById("btnBackupReminderDismiss").addEventListener("click", function(){
     try{ localStorage.setItem(BACKUP_REMINDER_SNOOZE_KEY, String(Date.now() + MS_PER_DAY)); }catch(e){}
     hideBackupReminder();
+  });
+
+  /* ================= AUTOMATIC DAILY BACKUPS =================
+     A second, independent line of defense alongside the manual "Export
+     Backup" button/reminder above. Added after a real incident (v0.1.34)
+     where a customer's data was gone after an app update for reasons
+     that turned out to be install/update-related, not caused by anything
+     the app's own load/save code did wrong -- meaning even a fully
+     correct save/load path can't protect against every failure mode.
+     Stored in the Windows Documents folder (NOT next to restaurant.db in
+     AppData) specifically so a problem affecting the app's own data
+     folder can't also take out the backups: they're independent by
+     construction, not just by convention. Runs once per day, right after
+     the app finishes starting up, entirely silently on success -- the
+     only visible trace in normal operation is the status line and
+     restore dropdown on the Settings screen. */
+  var AUTO_BACKUP_FOLDER_NAME = "Manokshmi RestroBill Backups";
+  var AUTO_BACKUP_RETENTION_COUNT = 7;
+
+  function getBackupsFolderPath(){
+    return window.__TAURI__.path.documentDir().then(function(docDir){
+      return window.__TAURI__.path.join(docDir, AUTO_BACKUP_FOLDER_NAME);
+    });
+  }
+
+  function todaysBackupFileName(){
+    return "backup-" + new Date().toISOString().slice(0, 10) + ".json";
+  }
+
+  // Filenames are "backup-YYYY-MM-DD.json" -- zero-padded ISO dates sort
+  // lexically in the same order as chronologically, so a plain string
+  // sort is enough to order them without parsing each one.
+  function listAutomaticBackups(folderPath){
+    return window.__TAURI__.fs.readDir(folderPath).then(function(entries){
+      return entries
+        .filter(function(e){ return e.name && /^backup-\d{4}-\d{2}-\d{2}\.json$/.test(e.name); })
+        .map(function(e){ return e.name; })
+        .sort();
+    });
+  }
+
+  function pruneOldAutomaticBackups(folderPath, keepNames){
+    var names = keepNames.slice();
+    var toDelete = names.slice(0, Math.max(0, names.length - AUTO_BACKUP_RETENTION_COUNT));
+    return runSequential(toDelete, function(name){
+      return window.__TAURI__.path.join(folderPath, name).then(function(fp){
+        return window.__TAURI__.fs.remove(fp);
+      });
+    });
+  }
+
+  function refreshAutoBackupStatusUi(){
+    var statusEl = document.getElementById("autoBackupStatusText");
+    var selectEl = document.getElementById("autoBackupList");
+    if(!statusEl || !selectEl) return;
+    getBackupsFolderPath().then(function(folderPath){
+      return listAutomaticBackups(folderPath);
+    }).then(function(names){
+      if(!names.length){
+        statusEl.textContent = "No automatic backups yet -- the first one is made the next time the app opens.";
+        selectEl.innerHTML = "";
+        return;
+      }
+      statusEl.textContent = "Automatic backups are saved daily to Documents\\" + AUTO_BACKUP_FOLDER_NAME + " (last " + names.length + " kept). Most recent: " + names[names.length - 1].replace("backup-", "").replace(".json", "") + ".";
+      selectEl.innerHTML = "";
+      names.slice().reverse().forEach(function(name){ // newest first
+        var opt = document.createElement("option");
+        opt.value = name;
+        opt.textContent = name.replace("backup-", "").replace(".json", "");
+        selectEl.appendChild(opt);
+      });
+    }).catch(function(err){
+      console.error("Could not list automatic backups", err);
+      statusEl.textContent = "Could not check automatic backups.";
+    });
+  }
+
+  // Called once at startup, after the app is up and running -- not on the
+  // critical path for opening/billing, so failures here are caught and
+  // surfaced as a toast (per the confirmed answer: warn, don't stay
+  // silent) rather than ever blocking normal use of the app.
+  function maybeRunAutomaticBackup(){
+    var folderPath;
+    var fileName = todaysBackupFileName();
+    return getBackupsFolderPath().then(function(p){
+      folderPath = p;
+      return window.__TAURI__.fs.mkdir(folderPath, {recursive: true});
+    }).then(function(){
+      return window.__TAURI__.path.join(folderPath, fileName);
+    }).then(function(filePath){
+      return window.__TAURI__.fs.exists(filePath).then(function(already){
+        if(already) return; // today's backup is already done
+        return buildBackupExportObject().then(function(exportObj){
+          return window.__TAURI__.fs.writeTextFile(filePath, JSON.stringify(exportObj, null, 2));
+        });
+      });
+    }).then(function(){
+      return listAutomaticBackups(folderPath);
+    }).then(function(names){
+      return pruneOldAutomaticBackups(folderPath, names);
+    }).then(function(){
+      refreshAutoBackupStatusUi();
+    }).catch(function(err){
+      console.error("Automatic backup failed", err);
+      debugLog("maybeRunAutomaticBackup() FAILED: " + JSON.stringify(err) + " / " + (err && err.message));
+      showToast("Today's automatic backup didn't complete. Your current data is fine -- but please export a manual backup from Settings to be safe.");
+    });
+  }
+
+  // Overwrites (not skips) today's backup file with the very latest
+  // data -- unlike maybeRunAutomaticBackup() above, which only fills in
+  // today's file if it's missing. This is what runs when the window is
+  // about to close: the point is to capture the WHOLE day's bills before
+  // the app shuts down for the night, not just whatever existed when it
+  // was opened this morning. The startup version stays as-is alongside
+  // this -- it's the fallback for a day that ends in a crash or power
+  // loss instead of a normal close, where this handler never gets to run.
+  function runEndOfDayBackup(){
+    var folderPath;
+    return getBackupsFolderPath().then(function(p){
+      folderPath = p;
+      return window.__TAURI__.fs.mkdir(folderPath, {recursive: true});
+    }).then(function(){
+      return buildBackupExportObject();
+    }).then(function(exportObj){
+      return window.__TAURI__.path.join(folderPath, todaysBackupFileName()).then(function(filePath){
+        return window.__TAURI__.fs.writeTextFile(filePath, JSON.stringify(exportObj, null, 2));
+      });
+    }).then(function(){
+      return listAutomaticBackups(folderPath);
+    }).then(function(names){
+      return pruneOldAutomaticBackups(folderPath, names);
+    });
+  }
+
+  // Registered once, as early as possible (doesn't need data loaded to
+  // start listening) -- but the backup itself only runs if the app
+  // actually finished starting (appStartedOnce), so closing the app from
+  // the license lock screen never overwrites a real backup with empty
+  // placeholder data. Deliberately does NOT call event.preventDefault():
+  // the handler is awaited before the window proceeds to close either
+  // way, so this only delays the close briefly rather than blocking it,
+  // and Promise.race with a timeout guarantees the app is always closable
+  // even if the backup write is somehow stuck (a full disk, a locked
+  // Documents folder, etc.) -- the app closing on time must never depend
+  // on a backup succeeding.
+  if(window.__TAURI__ && window.__TAURI__.window){
+    window.__TAURI__.window.getCurrentWindow().onCloseRequested(function(){
+      if(!appStartedOnce) return;
+      return Promise.race([
+        runEndOfDayBackup().catch(function(err){
+          console.error("End-of-day backup failed", err);
+          debugLog("runEndOfDayBackup() FAILED: " + JSON.stringify(err) + " / " + (err && err.message));
+        }),
+        sleep(5000) // never let a stuck backup delay closing the app for more than 5s
+      ]);
+    }).catch(function(err){
+      console.error("Could not register end-of-day backup on window close", err);
+    });
+  }
+
+  document.getElementById("btnRestoreAutoBackup").addEventListener("click", function(){
+    var selectEl = document.getElementById("autoBackupList");
+    var name = selectEl && selectEl.value;
+    if(!name){ showToast("No automatic backup available to restore"); return; }
+    var label = name.replace("backup-", "").replace(".json", "");
+    if(!confirm("Restore the automatic backup from " + label + "? This replaces all current menu items, bills, and settings on this device with that backup's data. This cannot be undone.")) return;
+    getBackupsFolderPath().then(function(folderPath){
+      return window.__TAURI__.path.join(folderPath, name);
+    }).then(function(filePath){
+      return window.__TAURI__.fs.readTextFile(filePath);
+    }).then(function(text){
+      var imported = JSON.parse(text);
+      return restoreFromBackupObject(imported, "Restored from automatic backup (" + label + ")");
+    }).catch(function(err){
+      console.error("Restore from automatic backup failed", err);
+      showToast("Could not restore that backup");
+    });
   });
 
   /* ================= AUTOMATIC UPDATES (Phase 6) =================
