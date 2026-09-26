@@ -4899,7 +4899,7 @@ var qrcode = function() {
      ============================================================ */
   var LICENSE_API_BASE = "https://licensing-platform.pages.dev"; // set to the real deployed licensing-platform URL
   var PRODUCT_ID = "restaurant-pos";
-  var APP_VERSION = "0.1.42";
+  var APP_VERSION = "0.1.43";
   var DB_VERSION = "1";
   var LICENSED_TO = "";
 
@@ -5434,6 +5434,36 @@ var qrcode = function() {
     return _saveChain;
   }
 
+  // v0.1.43 fix: identical to saveData() (same retry, same toast, same
+  // _saveChain bookkeeping) EXCEPT it re-throws the error afterward
+  // instead of swallowing it. saveData() deliberately swallows so one
+  // failed save doesn't wedge every FUTURE unrelated save behind a
+  // permanently-rejected _saveChain -- correct for routine autosaves, but
+  // wrong for the handful of callers (Import Backup / Restore Automatic
+  // Backup, Reset All Data) that show their OWN "success" message right
+  // after calling saveData(). Those callers had no way to know the save
+  // actually failed, so they'd show "Backup imported successfully" even
+  // when doSave() aborted partway through (e.g. the dangling-foreign-key
+  // case fixed nearby) -- exactly matching a customer report of "import
+  // said it worked, but after reopening most data was gone, and the same
+  // data stayed every time." Use this instead of saveData() anywhere the
+  // caller needs to know the save genuinely succeeded before telling the
+  // user it did.
+  function saveDataOrThrow(options){
+    itemCodeIndexCache = null;
+    var attempt = doSaveWithRetry(4, options).then(function(){
+      debugLog("doSave() completed OK");
+    }).catch(function(err){
+      console.error("SQLite save failed", err);
+      debugLog("doSave() FAILED: " + JSON.stringify(err) + " / " + (err && err.message));
+      showToast(err && err.userMessage ? err.userMessage :
+        "Could not save your last change. Please close and reopen the app; if this keeps happening, export a backup from Settings and contact support.");
+      throw err; // re-throw -- the only difference from saveData()
+    });
+    _saveChain = attempt.catch(function(){}); // keep the shared chain healthy for future unrelated saves either way
+    return attempt;
+  }
+
   // Builds "$1,$2,$3..." for a parameterized IN/NOT IN list of the given length.
   function idPlaceholders(n){
     var arr = [];
@@ -5602,12 +5632,32 @@ var qrcode = function() {
       }); })
       .then(function(){ return deleteMissingIds(db, "categories", data.categories.map(function(c){ return c.id; })); })
 
-      .then(function(){ return runSequential(data.subcategories, function(s){
-        return db.execute(
-          "INSERT INTO subcategories (id, category_id, name) VALUES ($1,$2,$3) " +
-          "ON CONFLICT(id) DO UPDATE SET category_id=excluded.category_id, name=excluded.name",
-          [s.id, s.categoryId || null, s.name]);
-      }); })
+      .then(function(){
+        // v0.1.43 fix: a dangling category_id (pointing at a category
+        // that no longer exists in data.categories -- e.g. the category
+        // was deleted at some point without also clearing it from every
+        // subcategory that referenced it) used to make THIS INSERT itself
+        // fail outright: this app's SQLite connections run with
+        // foreign_keys=ON (confirmed against sqlx's own source), so any
+        // INSERT with a foreign key value that doesn't exist in the
+        // referenced table is rejected, regardless of that column's ON
+        // DELETE behavior. That aborted the entire save right here,
+        // before categories/subcategories even finished, let alone menu
+        // items, orders, bills, or anything after -- silently, since
+        // saveData()'s own catch only shows a toast rather than stopping
+        // the caller. Null out a dangling reference instead of letting it
+        // abort the save; a subcategory with no valid category left is a
+        // real, valid state (shows as uncategorized), not an error.
+        var validCategoryIds = {};
+        data.categories.forEach(function(c){ validCategoryIds[c.id] = true; });
+        return runSequential(data.subcategories, function(s){
+          var categoryId = (s.categoryId && validCategoryIds[s.categoryId]) ? s.categoryId : null;
+          return db.execute(
+            "INSERT INTO subcategories (id, category_id, name) VALUES ($1,$2,$3) " +
+            "ON CONFLICT(id) DO UPDATE SET category_id=excluded.category_id, name=excluded.name",
+            [s.id, categoryId, s.name]);
+        });
+      })
       .then(function(){ return deleteMissingIds(db, "subcategories", data.subcategories.map(function(s){ return s.id; })); })
 
       .then(function(){ return runSequential(data.tables, function(t, i){
@@ -5654,14 +5704,46 @@ var qrcode = function() {
         // gathered across the whole menuItems loop before running once.
         var variantIds = [];
         var recipeIds = [];
+        // v0.1.43 fix (same root cause as the subcategories fix above,
+        // this is the highest-impact instance of it): a menu item's
+        // category_id/subcategory_id can go dangling the same way (its
+        // category/subcategory was deleted without updating every item
+        // that used it), and a recipe line's inventoryItemId can go
+        // dangling the same way (its ingredient was deleted from
+        // Inventory without updating every recipe that used it) -- very
+        // realistic after enough real-world editing, not a contrived
+        // edge case. With foreign_keys=ON, inserting any of these as-is
+        // fails outright and aborts doSave() right here, before orders,
+        // bills, or credit accounts are ever reached -- and because
+        // saveData() only shows a toast rather than telling its caller,
+        // a bulk action like Import Backup or Reset All Data would still
+        // show ITS OWN "success" message afterward even though the save
+        // actually failed partway through. This is very likely the exact
+        // mechanism behind a customer report of "import looked
+        // successful, but after reopening most data was gone -- the
+        // same data stayed every time": the same tables up to this point
+        // saved fine every time, and the loop failed at the same
+        // dangling reference every time. category_id/subcategory_id are
+        // nullable (ON DELETE SET NULL), so a dangling one is nulled
+        // out; inventory_item_id is NOT nullable on menu_item_recipes,
+        // so a recipe line with a dangling one is dropped instead of
+        // attempted.
+        var validCategoryIds = {};
+        data.categories.forEach(function(c){ validCategoryIds[c.id] = true; });
+        var validSubcategoryIds = {};
+        data.subcategories.forEach(function(s){ validSubcategoryIds[s.id] = true; });
+        var validInventoryIds = {};
+        (data.inventoryItems || []).forEach(function(inv){ validInventoryIds[inv.id] = true; });
         return runSequential(data.menuItems, function(m){
+          var categoryId = (m.categoryId && validCategoryIds[m.categoryId]) ? m.categoryId : null;
+          var subcategoryId = (m.subcategoryId && validSubcategoryIds[m.subcategoryId]) ? m.subcategoryId : null;
           return db.execute(
             "INSERT INTO menu_items (id, code, name, category_id, subcategory_id, price, tax_percent, photo, send_to_kitchen, favorite, out_of_stock) " +
             "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) " +
             "ON CONFLICT(id) DO UPDATE SET code=excluded.code, name=excluded.name, category_id=excluded.category_id, " +
             "subcategory_id=excluded.subcategory_id, price=excluded.price, tax_percent=excluded.tax_percent, photo=excluded.photo, " +
             "send_to_kitchen=excluded.send_to_kitchen, favorite=excluded.favorite, out_of_stock=excluded.out_of_stock",
-            [m.id, m.code || null, m.name, m.categoryId || null, m.subcategoryId || null,
+            [m.id, m.code || null, m.name, categoryId, subcategoryId,
              m.variants ? null : (m.price != null ? m.price : null), m.taxPercent != null ? m.taxPercent : null,
              m.photo || null, m.sendToKitchen === undefined ? null : (m.sendToKitchen ? 1 : 0),
              m.favorite ? 1 : 0, m.outOfStock ? 1 : 0]
@@ -5675,7 +5757,8 @@ var qrcode = function() {
             });
           }).then(function(){
             if(!m.recipe || !m.recipe.length) return;
-            return runSequential(m.recipe, function(rc, i){
+            var validRecipeLines = m.recipe.filter(function(rc){ return validInventoryIds[rc.inventoryItemId]; });
+            return runSequential(validRecipeLines, function(rc, i){
               var rid = m.id + "-r" + i;
               recipeIds.push(rid);
               return db.execute("INSERT OR REPLACE INTO menu_item_recipes (id, menu_item_id, inventory_item_id, quantity_per_unit, sort_order) VALUES ($1,$2,$3,$4,$5)",
@@ -5691,7 +5774,15 @@ var qrcode = function() {
         });
       })
 
-      .then(function(){ return runSequential(data.openOrders, function(o){
+      .then(function(){
+        // Same dangling-foreign-key risk as categories/menu items above:
+        // open_orders.table_id can point at a table that's since been
+        // deleted/merged away. Nullable (ON DELETE SET NULL), so null it
+        // out rather than let the INSERT fail and abort the whole save.
+        var validTableIds = {};
+        data.tables.forEach(function(t){ validTableIds[t.id] = true; });
+        return runSequential(data.openOrders, function(o){
+        var tableId = (o.tableId && validTableIds[o.tableId]) ? o.tableId : null;
         return db.execute(
           "INSERT INTO open_orders (id, table_id, table_name, customer, customer_phone, discount_value, discount_type, " +
           "payment_mode, split_enabled, split_payments, is_parcel, packing_charge_override, kot_sent, editing_bill_id, created_at, cancelled_session) " +
@@ -5701,7 +5792,7 @@ var qrcode = function() {
           "payment_mode=excluded.payment_mode, split_enabled=excluded.split_enabled, split_payments=excluded.split_payments, " +
           "is_parcel=excluded.is_parcel, packing_charge_override=excluded.packing_charge_override, kot_sent=excluded.kot_sent, " +
           "editing_bill_id=excluded.editing_bill_id, created_at=excluded.created_at, cancelled_session=excluded.cancelled_session",
-          [o.id, o.tableId || null, o.table || "", o.customer || "", o.customerPhone || "", o.discountValue || 0,
+          [o.id, tableId, o.table || "", o.customer || "", o.customerPhone || "", o.discountValue || 0,
            o.discountType || "amount", o.paymentMode || "Cash", o.splitEnabled ? 1 : 0,
            o.splitPayments ? JSON.stringify(o.splitPayments) : null, o.isParcel ? 1 : 0,
            o.packingChargeOverride != null ? o.packingChargeOverride : null, JSON.stringify(o.kotSent || {}),
@@ -6466,14 +6557,25 @@ var qrcode = function() {
       // before the Inventory feature existed) is what should end up on
       // disk, not blocked by the guard meant to catch an ACCIDENTALLY
       // empty table.
-      return saveData(FULL_WIPE_OPTIONS).then(function(){
+      //
+      // v0.1.43 fix: this used to call saveData(), which SWALLOWS a
+      // genuine save failure (shows its own toast, but still resolves) --
+      // so if doSave() ever aborted partway through (e.g. the dangling-
+      // foreign-key case fixed nearby), this code had no way to know, and
+      // would still fall through to the "Backup imported successfully"
+      // toast below as if nothing was wrong. saveDataOrThrow() does the
+      // exact same save, but actually rejects this promise chain on a
+      // real failure, so the .catch() below can tell the user honestly.
+      return saveDataOrThrow(FULL_WIPE_OPTIONS).then(function(){
         return restoreInventoryLedgers(importedPurchases, importedStockLog);
       });
     }).then(function(){
       showToast(successMessage);
     }).catch(function(err){
-      console.error("Restoring inventory purchase/stock history failed", err);
-      showToast(successMessage + ", but purchase/stock history could not be restored");
+      console.error("Restore failed", err);
+      persistDebugLog("restoreFromBackupObject FAILED: " + JSON.stringify(err) + " / " + (err && err.message));
+      showToast(err && err.userMessage ? err.userMessage :
+        "Restore did not complete -- some data may not have been saved. Please reopen the app and check your data before continuing; export a fresh backup from Settings if everything looks correct.");
     });
     _saveChain = restorePromise.catch(function(){}); // keep the shared chain alive even if this restore failed
     return restorePromise;
@@ -6507,18 +6609,24 @@ var qrcode = function() {
       _saveChain = _saveChain.then(function(){
         data = JSON.parse(JSON.stringify(defaultData));
         activeOrderId = null;
-        // Explicit, confirmed "erase everything" action -- same
-        // reasoning as Erase All Menu above.
-        var p = saveData(FULL_WIPE_OPTIONS);
         renderHeader();
         renderSettingsScreen();
         renderMenuScreen();
         renderBillingScreen();
         renderHistory();
-        showToast("All data erased");
-        return p;
+        // Explicit, confirmed "erase everything" action -- same reasoning
+        // as Erase All Menu above. v0.1.43: uses saveDataOrThrow() (not
+        // saveData()) so the "All data erased" toast only fires on an
+        // actual confirmed success -- same honesty fix as Import/Restore
+        // nearby, applied here too for consistency even though Reset's
+        // all-empty defaultData has no dangling-reference risk of its own.
+        return saveDataOrThrow(FULL_WIPE_OPTIONS).then(function(){
+          showToast("All data erased");
+        });
       }).catch(function(err){
         console.error("Reset All Data failed", err);
+        persistDebugLog("Reset All Data FAILED: " + JSON.stringify(err) + " / " + (err && err.message));
+        showToast(err && err.userMessage ? err.userMessage : "Reset did not complete -- please reopen the app and try again.");
       });
     }
   });
@@ -8509,16 +8617,32 @@ var qrcode = function() {
   // other upsert here), making the exact same crash-safe pattern apply.
   function restoreInventoryLedgersAttempt(purchases, stockLog){
     return getDb().then(function(db){
-      return runSequential(purchases || [], function(p){
+      // v0.1.43 fix: same dangling-foreign-key risk as doSave() (see its
+      // notes on menu_item_recipes/open_orders/subcategories) -- a
+      // purchase or stock-log row whose item_id no longer exists in
+      // inventory_items (e.g. that ingredient was deleted at some point,
+      // or an older/partial backup's ledger doesn't match its own
+      // inventory list) would make the INSERT fail outright with
+      // foreign_keys=ON, aborting the restore partway through. By the
+      // time this runs, saveData() just above has already synced
+      // data.inventoryItems from this same import, so it's the correct,
+      // current source of truth to validate against. Rows referencing a
+      // genuinely-missing item are dropped rather than aborting the rest
+      // of the ledger restore.
+      var validInventoryIds = {};
+      (data.inventoryItems || []).forEach(function(inv){ validInventoryIds[inv.id] = true; });
+      var validPurchases = (purchases || []).filter(function(p){ return validInventoryIds[p.item_id]; });
+      var validStockLog = (stockLog || []).filter(function(l){ return validInventoryIds[l.item_id]; });
+      return runSequential(validPurchases, function(p){
         return db.execute(
           "INSERT OR REPLACE INTO inventory_purchases (id, item_id, supplier_name, quantity, unit_cost, total_cost, purchase_date, notes, created_at) " +
           "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)",
           [p.id, p.item_id, p.supplier_name || "", p.quantity, p.unit_cost, p.total_cost, p.purchase_date, p.notes || "", p.created_at]
         );
       })
-      .then(function(){ return deleteMissingIds(db, "inventory_purchases", (purchases || []).map(function(p){ return p.id; })); })
+      .then(function(){ return deleteMissingIds(db, "inventory_purchases", validPurchases.map(function(p){ return p.id; })); })
       .then(function(){
-        return runSequential(stockLog || [], function(l){
+        return runSequential(validStockLog, function(l){
           return db.execute(
             "INSERT OR REPLACE INTO inventory_stock_log (id, item_id, change_qty, reason, reference_bill_id, reference_purchase_id, notes, created_at) " +
             "VALUES ($1,$2,$3,$4,$5,$6,$7,$8)",
@@ -8526,7 +8650,7 @@ var qrcode = function() {
           );
         });
       })
-      .then(function(){ return deleteMissingIds(db, "inventory_stock_log", (stockLog || []).map(function(l){ return l.id; }).filter(function(id){ return id != null; })); });
+      .then(function(){ return deleteMissingIds(db, "inventory_stock_log", validStockLog.map(function(l){ return l.id; }).filter(function(id){ return id != null; })); });
     });
   }
 
@@ -12786,21 +12910,23 @@ var qrcode = function() {
     });
   }
 
-  // Best-effort disk-persisted log for JUST the close flow. Plain
-  // debugLog() only ever goes to console.log, which is invisible in a
-  // release build (DevTools are disabled outside debug builds) -- exactly
-  // why the last two attempts at this specific bug were guesses rather
-  // than a diagnosis from evidence. This mirrors each close-flow step into
-  // a small text file next to the automatic backups (same folder, same
-  // already-granted permission), so if THIS fix still doesn't resolve it,
-  // there's an actual on-disk trail (Documents\Manokshmi RestroBill
-  // Backups\close-debug.log) to read instead of a third blind guess.
-  function closeLog(text){
+  // Best-effort disk-persisted log. Plain debugLog() only ever goes to
+  // console.log, which is invisible in a release build (DevTools are
+  // disabled outside debug builds) -- exactly why several earlier attempts
+  // at diagnosing field-only bugs (the app not closing, then a customer's
+  // "import succeeded but data vanished") had to be guesses instead of a
+  // diagnosis from evidence. This mirrors any important step -- originally
+  // just the close flow, now also save/restore failures worth a permanent
+  // record of -- into a small text file next to the automatic backups
+  // (same folder, same already-granted permission): Documents\Manokshmi
+  // RestroBill Backups\debug.log. If a future report of either symptom
+  // still doesn't resolve, that file is an actual trail to read.
+  function persistDebugLog(text){
     debugLog(text);
     try{
       getBackupsFolderPath().then(function(folderPath){
         return window.__TAURI__.fs.mkdir(folderPath, {recursive: true}).then(function(){
-          return window.__TAURI__.path.join(folderPath, "close-debug.log");
+          return window.__TAURI__.path.join(folderPath, "debug.log");
         });
       }).then(function(filePath){
         return window.__TAURI__.fs.writeTextFile(filePath, "[" + new Date().toISOString() + "] " + text + "\n", {append: true});
@@ -12843,7 +12969,7 @@ var qrcode = function() {
       if(!appStartedOnce) return; // let it close immediately, no backup attempted yet
       if(_closeInProgress){ event.preventDefault(); return; } // already closing -- ignore the repeat request
       _closeInProgress = true;
-      closeLog("close-requested: handler entered");
+      persistDebugLog("close-requested: handler entered");
       event.preventDefault();
 
       // v0.1.42 fix -- a customer reported "closed the app and data was
@@ -12867,18 +12993,18 @@ var qrcode = function() {
       // is allowed to die, regardless of whether step 1 finished in time.
       var saveAndBackup = Promise.race([
         _saveChain.then(function(){
-          closeLog("close-requested: pending save (if any) finished");
+          persistDebugLog("close-requested: pending save (if any) finished");
           return runEndOfDayBackup().then(function(){
-            closeLog("close-requested: end-of-day backup finished OK");
+            persistDebugLog("close-requested: end-of-day backup finished OK");
           }).catch(function(err){
             console.error("End-of-day backup failed", err);
-            closeLog("runEndOfDayBackup() FAILED: " + JSON.stringify(err) + " / " + (err && err.message));
+            persistDebugLog("runEndOfDayBackup() FAILED: " + JSON.stringify(err) + " / " + (err && err.message));
           });
         }),
-        sleep(5000).then(function(){ closeLog("close-requested: save/backup timed out at 5s"); })
+        sleep(5000).then(function(){ persistDebugLog("close-requested: save/backup timed out at 5s"); })
       ]).catch(function(err){
         console.error("Unexpected error during save/backup on close", err);
-        closeLog("close-requested: unexpected save/backup error: " + JSON.stringify(err) + " / " + (err && err.message));
+        persistDebugLog("close-requested: unexpected save/backup error: " + JSON.stringify(err) + " / " + (err && err.message));
       });
 
       saveAndBackup.then(function(){
@@ -12887,24 +13013,24 @@ var qrcode = function() {
         // hitting a locked file, so it must not be skippable.
         return Promise.race([
           getDb().then(function(db){ return db.close(); }).then(function(){
-            closeLog("close-requested: database connection closed cleanly");
+            persistDebugLog("close-requested: database connection closed cleanly");
           }).catch(function(err){
             console.error("Could not cleanly close database before exit", err);
-            closeLog("db.close() FAILED: " + JSON.stringify(err) + " / " + (err && err.message));
+            persistDebugLog("db.close() FAILED: " + JSON.stringify(err) + " / " + (err && err.message));
           }),
-          sleep(2000).then(function(){ closeLog("close-requested: db.close() timed out at 2s"); })
+          sleep(2000).then(function(){ persistDebugLog("close-requested: db.close() timed out at 2s"); })
         ]);
       }).then(function(){
-        closeLog("close-requested: calling process.exit(0) now");
+        persistDebugLog("close-requested: calling process.exit(0) now");
         return window.__TAURI__.process.exit(0);
       }).catch(function(err){
         console.error("process.exit(0) failed, falling back to window destroy()", err);
-        closeLog("process.exit(0) FAILED, falling back to destroy(): " + JSON.stringify(err) + " / " + (err && err.message));
+        persistDebugLog("process.exit(0) FAILED, falling back to destroy(): " + JSON.stringify(err) + " / " + (err && err.message));
         return _closeWin.destroy().then(function(){
-          closeLog("close-requested: fallback destroy() succeeded");
+          persistDebugLog("close-requested: fallback destroy() succeeded");
         }).catch(function(err2){
           console.error("Fallback destroy() also failed", err2);
-          closeLog("Fallback destroy() ALSO FAILED: " + JSON.stringify(err2) + " / " + (err2 && err2.message));
+          persistDebugLog("Fallback destroy() ALSO FAILED: " + JSON.stringify(err2) + " / " + (err2 && err2.message));
         });
       });
     }).catch(function(err){

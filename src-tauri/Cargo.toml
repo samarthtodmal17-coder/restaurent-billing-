@@ -1,6 +1,6 @@
 [package]
 name = "restaurant-billing"
-version = "0.1.42"
+version = "0.1.43"
 description = "Manokshmi RestroBill - Tauri desktop shell (Phase 1: SQLite storage)"
 edition = "2021"
 
