@@ -4899,7 +4899,7 @@ var qrcode = function() {
      ============================================================ */
   var LICENSE_API_BASE = "https://licensing-platform.pages.dev"; // set to the real deployed licensing-platform URL
   var PRODUCT_ID = "restaurant-pos";
-  var APP_VERSION = "0.1.41";
+  var APP_VERSION = "0.1.42";
   var DB_VERSION = "1";
   var LICENSED_TO = "";
 
@@ -5338,15 +5338,26 @@ var qrcode = function() {
     return loadDataAttempt().catch(function(err){
       if(attemptsLeft > 0 && isTransientDbError(err)){
         debugLog("loadData() hit a transient error, retrying (" + attemptsLeft + " attempts left): " + (err && err.message));
-        return sleep(150).then(function(){ return loadDataWithRetry(attemptsLeft - 1); });
+        return sleep(300).then(function(){ return loadDataWithRetry(attemptsLeft - 1); });
       }
       console.error("SQLite load failed after retries", err);
       throw err;
     });
   }
 
+  // v0.1.42: retry budget raised from 4x150ms (~600ms) to 8x300ms (~2.4s).
+  // A customer reported "closed the app and data was gone (sometimes)"
+  // right after v0.1.41 started force-killing the process with
+  // process.exit() on close -- see the close-handler fix nearby for the
+  // real fix (explicitly closing the SQLite connection first), but this
+  // widens the safety margin too: if a forced process kill ever DOES
+  // leave the database file's OS-level lock held for a moment after
+  // relaunch, this gives it much longer to clear before loadData() gives
+  // up and shows the "could not load" alert -- which is what a customer
+  // not reading a technical dialog would describe as "the data is gone",
+  // even though nothing on disk was actually touched.
   function loadData(){
-    return loadDataWithRetry(4);
+    return loadDataWithRetry(8);
   }
 
   // ================= SAVE =================
@@ -12832,19 +12843,57 @@ var qrcode = function() {
       if(!appStartedOnce) return; // let it close immediately, no backup attempted yet
       if(_closeInProgress){ event.preventDefault(); return; } // already closing -- ignore the repeat request
       _closeInProgress = true;
-      closeLog("close-requested: handler entered, starting end-of-day backup before exit");
+      closeLog("close-requested: handler entered");
       event.preventDefault();
-      Promise.race([
-        runEndOfDayBackup().then(function(){
-          closeLog("close-requested: end-of-day backup finished OK");
-        }).catch(function(err){
-          console.error("End-of-day backup failed", err);
-          closeLog("runEndOfDayBackup() FAILED: " + JSON.stringify(err) + " / " + (err && err.message));
+
+      // v0.1.42 fix -- a customer reported "closed the app and data was
+      // gone (sometimes)" right after v0.1.41 switched to a forced
+      // process.exit(0) to actually terminate the app (destroy() alone
+      // wasn't reliably ending the process at all -- see the v0.1.41
+      // note below). process.exit(0) kills the OS process immediately;
+      // it does NOT wait for _saveChain (the actual save queue -- e.g.
+      // the bill someone just added right before clicking close) to
+      // finish writing, and it does not close the SQLite connection pool
+      // first either. If that forced kill ever left the database file's
+      // OS-level lock held for even a brief moment, the NEXT launch's
+      // Database.load() could hit "database is locked" for long enough to
+      // exhaust the retry budget and show the "could not load" alert --
+      // which looks exactly like "the data is gone" to someone who
+      // doesn't read a technical dialog, even though nothing on disk was
+      // ever actually touched. Step 1 below now waits for any in-flight
+      // save to genuinely finish before taking the end-of-day backup;
+      // step 2 (below that) ALWAYS explicitly closes the SQL connection
+      // pool -- releasing its file handle cleanly -- before the process
+      // is allowed to die, regardless of whether step 1 finished in time.
+      var saveAndBackup = Promise.race([
+        _saveChain.then(function(){
+          closeLog("close-requested: pending save (if any) finished");
+          return runEndOfDayBackup().then(function(){
+            closeLog("close-requested: end-of-day backup finished OK");
+          }).catch(function(err){
+            console.error("End-of-day backup failed", err);
+            closeLog("runEndOfDayBackup() FAILED: " + JSON.stringify(err) + " / " + (err && err.message));
+          });
         }),
-        sleep(5000).then(function(){ closeLog("close-requested: backup timed out at 5s, exiting anyway"); })
+        sleep(5000).then(function(){ closeLog("close-requested: save/backup timed out at 5s"); })
       ]).catch(function(err){
-        console.error("Unexpected error while closing after end-of-day backup", err);
-        closeLog("close-requested: unexpected error after backup step: " + JSON.stringify(err) + " / " + (err && err.message));
+        console.error("Unexpected error during save/backup on close", err);
+        closeLog("close-requested: unexpected save/backup error: " + JSON.stringify(err) + " / " + (err && err.message));
+      });
+
+      saveAndBackup.then(function(){
+        // ALWAYS attempted, even if the save/backup step above timed out
+        // -- this is the step that actually prevents the next launch from
+        // hitting a locked file, so it must not be skippable.
+        return Promise.race([
+          getDb().then(function(db){ return db.close(); }).then(function(){
+            closeLog("close-requested: database connection closed cleanly");
+          }).catch(function(err){
+            console.error("Could not cleanly close database before exit", err);
+            closeLog("db.close() FAILED: " + JSON.stringify(err) + " / " + (err && err.message));
+          }),
+          sleep(2000).then(function(){ closeLog("close-requested: db.close() timed out at 2s"); })
+        ]);
       }).then(function(){
         closeLog("close-requested: calling process.exit(0) now");
         return window.__TAURI__.process.exit(0);
