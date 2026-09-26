@@ -4899,7 +4899,7 @@ var qrcode = function() {
      ============================================================ */
   var LICENSE_API_BASE = "https://licensing-platform.pages.dev"; // set to the real deployed licensing-platform URL
   var PRODUCT_ID = "restaurant-pos";
-  var APP_VERSION = "0.1.40";
+  var APP_VERSION = "0.1.41";
   var DB_VERSION = "1";
   var LICENSED_TO = "";
 
@@ -12775,20 +12775,44 @@ var qrcode = function() {
     });
   }
 
-  // v0.1.38 REGRESSION FIX: this used to just return a promise from the
-  // handler without calling event.preventDefault(), on the assumption
-  // that Tauri would await it before closing anyway. That assumption was
-  // wrong in practice -- Tauri's own examples only ever call
-  // preventDefault() to BLOCK a close, and there is no documented
-  // guarantee that a handler which returns a promise without calling
-  // preventDefault() gets awaited before the window closes. In the field
-  // this made the window not close at all after opening the app on
-  // v0.1.38. Fixed to use the explicit, documented pattern instead:
-  // always call preventDefault() first (so Tauri never auto-closes on
-  // its own timing), run the backup ourselves bounded by a 5s timeout,
-  // and then force the window shut with destroy() -- NOT close(), because
-  // close() just re-requests a close and would re-enter this same
-  // handler in a loop. destroy() forces it immediately, once.
+  // Best-effort disk-persisted log for JUST the close flow. Plain
+  // debugLog() only ever goes to console.log, which is invisible in a
+  // release build (DevTools are disabled outside debug builds) -- exactly
+  // why the last two attempts at this specific bug were guesses rather
+  // than a diagnosis from evidence. This mirrors each close-flow step into
+  // a small text file next to the automatic backups (same folder, same
+  // already-granted permission), so if THIS fix still doesn't resolve it,
+  // there's an actual on-disk trail (Documents\Manokshmi RestroBill
+  // Backups\close-debug.log) to read instead of a third blind guess.
+  function closeLog(text){
+    debugLog(text);
+    try{
+      getBackupsFolderPath().then(function(folderPath){
+        return window.__TAURI__.fs.mkdir(folderPath, {recursive: true}).then(function(){
+          return window.__TAURI__.path.join(folderPath, "close-debug.log");
+        });
+      }).then(function(filePath){
+        return window.__TAURI__.fs.writeTextFile(filePath, "[" + new Date().toISOString() + "] " + text + "\n", {append: true});
+      }).catch(function(){}); // logging itself must never be able to cause a problem
+    }catch(e){}
+  }
+
+  // v0.1.38 REGRESSION FIX, v0.1.41 FOLLOW-UP: v0.1.39 switched this to
+  // event.preventDefault() + _closeWin.destroy() (the documented pattern
+  // for delaying a close to do async work first) -- but the app still
+  // would not close in the field on v0.1.39 AND v0.1.40, meaning
+  // destroy() alone isn't reliably ending the process on whatever
+  // WebView2/Windows combination affected customers are running, even
+  // though it's the officially documented method. Rather than keep
+  // guessing at window-level APIs, this now calls
+  // window.__TAURI__.process.exit(0) -- a completely different, lower-
+  // level mechanism (already used elsewhere in this file for the
+  // updater's relaunch()) that tells the Rust side to terminate the whole
+  // OS process directly, bypassing window/webview close semantics
+  // entirely. destroy() is kept as a fallback only if process.exit()
+  // itself is ever unavailable or errors. Every step now also writes to
+  // debugLog so a future report of this same symptom leaves an actual
+  // trail of which step it got stuck on, instead of another guess.
   //
   // Registered once, as early as possible (doesn't need data loaded to
   // start listening) -- but the backup itself only runs if the app
@@ -12799,27 +12823,40 @@ var qrcode = function() {
   if(window.__TAURI__ && window.__TAURI__.window){
     var _closeWin = window.__TAURI__.window.getCurrentWindow();
     // Re-entrancy guard: without this, clicking the OS close button (or
-    // pressing Alt+F4) twice in quick succession before destroy() fires
-    // would re-enter this handler and kick off a SECOND end-of-day backup
-    // concurrently with the first -- both racing to write the same file.
+    // pressing Alt+F4) twice in quick succession before the process
+    // actually exits would re-enter this handler and kick off a SECOND
+    // end-of-day backup concurrently with the first -- both racing to
+    // write the same file.
     var _closeInProgress = false;
     _closeWin.onCloseRequested(function(event){
       if(!appStartedOnce) return; // let it close immediately, no backup attempted yet
       if(_closeInProgress){ event.preventDefault(); return; } // already closing -- ignore the repeat request
       _closeInProgress = true;
+      closeLog("close-requested: handler entered, starting end-of-day backup before exit");
       event.preventDefault();
       Promise.race([
-        runEndOfDayBackup().catch(function(err){
+        runEndOfDayBackup().then(function(){
+          closeLog("close-requested: end-of-day backup finished OK");
+        }).catch(function(err){
           console.error("End-of-day backup failed", err);
-          debugLog("runEndOfDayBackup() FAILED: " + JSON.stringify(err) + " / " + (err && err.message));
+          closeLog("runEndOfDayBackup() FAILED: " + JSON.stringify(err) + " / " + (err && err.message));
         }),
-        sleep(5000) // never let a stuck backup delay closing the app for more than 5s
+        sleep(5000).then(function(){ closeLog("close-requested: backup timed out at 5s, exiting anyway"); })
       ]).catch(function(err){
         console.error("Unexpected error while closing after end-of-day backup", err);
+        closeLog("close-requested: unexpected error after backup step: " + JSON.stringify(err) + " / " + (err && err.message));
       }).then(function(){
-        return _closeWin.destroy();
+        closeLog("close-requested: calling process.exit(0) now");
+        return window.__TAURI__.process.exit(0);
       }).catch(function(err){
-        console.error("Failed to force-close window after end-of-day backup", err);
+        console.error("process.exit(0) failed, falling back to window destroy()", err);
+        closeLog("process.exit(0) FAILED, falling back to destroy(): " + JSON.stringify(err) + " / " + (err && err.message));
+        return _closeWin.destroy().then(function(){
+          closeLog("close-requested: fallback destroy() succeeded");
+        }).catch(function(err2){
+          console.error("Fallback destroy() also failed", err2);
+          closeLog("Fallback destroy() ALSO FAILED: " + JSON.stringify(err2) + " / " + (err2 && err2.message));
+        });
       });
     }).catch(function(err){
       console.error("Could not register end-of-day backup on window close", err);
