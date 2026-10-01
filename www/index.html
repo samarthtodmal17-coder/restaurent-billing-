@@ -4899,7 +4899,7 @@ var qrcode = function() {
      ============================================================ */
   var LICENSE_API_BASE = "https://licensing-platform.pages.dev"; // set to the real deployed licensing-platform URL
   var PRODUCT_ID = "restaurant-pos";
-  var APP_VERSION = "0.1.44";
+  var APP_VERSION = "0.1.45";
   var DB_VERSION = "1";
   var LICENSED_TO = "";
 
@@ -9579,6 +9579,22 @@ var qrcode = function() {
     menuPickerResizeTimer = setTimeout(sizeMenuPickerList, 120);
   });
 
+  // Scrolls the Tables card into view and force-expands it if the staff
+  // member had collapsed it (see the cardTables accordion wired up in
+  // initCardAccordions) -- used to actually put the floor plan in front
+  // of someone who needs to pick a table, instead of just telling them to.
+  function expandTablesCard(){
+    var card = document.getElementById("cardTables");
+    if(!card) return;
+    if(card.classList.contains("acc-collapsed")){
+      var chevron = card.querySelector(".acc-chevron");
+      setCardCollapsed(card, chevron, false);
+      collapsedCardsState["cardTables"] = false;
+      saveCollapsedCardsState();
+    }
+    card.scrollIntoView({block: "nearest", behavior: "smooth"});
+  }
+
   function addToCart(item, variant){
     // Single choke point for every "add to bill" path (tap, Add button,
     // Enter-to-add by code, digit-key variant pick, favourites bar) --
@@ -9589,6 +9605,19 @@ var qrcode = function() {
       return;
     }
     var order = getActiveOrder();
+    // v0.1.45 fix: a brand-new order defaults to Dine-in with no table
+    // linked (see createNewOrder/pickDefaultActiveOrder) -- adding items
+    // straight away used to silently build up a table-less walk-in order
+    // instead of asking which table it's for, so it only ever showed up
+    // as an easy-to-miss chip at the bottom, never against a real table
+    // on the floor plan. Parcel/Takeaway orders are exempt -- they're
+    // walk-in by nature (see the Dine-in/Parcel toggle), so no table is
+    // ever required for them.
+    if(!order.isParcel && !order.tableId){
+      showToast("Pick a table first for this Dine-in order (or switch to Parcel/Takeaway)");
+      expandTablesCard();
+      return;
+    }
     var key = item.id + "::" + (variant ? variant.id : "base");
     var existing = order.items.find(function(c){ return c.key === key; });
     var price = variant ? variant.price : item.price;
@@ -9926,6 +9955,50 @@ var qrcode = function() {
     saveData();
     renderOrderTabs();
     document.getElementById("currentBillTableLabel").textContent = order.table ? ("Table / Room: " + order.table) : "";
+  });
+
+  // If what's typed into Table / Room matches an existing floor-plan
+  // table by name (e.g. F3 then typing "5" when Table 5 already exists),
+  // link this order to that REAL table instead of leaving it as
+  // disconnected free text. Previously typing an existing table's name
+  // here only ever set a plain string -- the real table tile stayed
+  // "Free" on the floor plan while a second, untracked walk-in order with
+  // a matching name existed alongside it, which read as "it's making a
+  // new one instead of taking the existing table". Only takes over a
+  // table that's genuinely free right now (no items on it); if that table
+  // already has a running bill, this sends the user to open that instead
+  // of silently duplicating it.
+  function tryLinkTypedTableName(order){
+    if(!order || order.tableId) return; // already linked -- field is readonly
+    var typed = (order.table || "").trim();
+    if(!typed) return;
+    var match = data.tables.find(function(t){ return t.name.trim().toLowerCase() === typed.toLowerCase(); });
+    if(!match) return;
+    var existingOrderForTable = findOrderForTable(match.id);
+    if(existingOrderForTable && existingOrderForTable.id !== order.id){
+      if(existingOrderForTable.items && existingOrderForTable.items.length > 0){
+        showToast("\"" + match.name + "\" already has a running bill -- open it from the Tables list instead of typing its name here.");
+        return;
+      }
+      // Only an empty "ghost" order was sitting on that table (tapped once,
+      // never used) -- safe to drop it and take over the table here.
+      data.openOrders = data.openOrders.filter(function(o){ return o.id !== existingOrderForTable.id; });
+    }
+    order.tableId = match.id;
+    order.table = match.name;
+    saveData();
+    renderBillingScreen();
+    showToast("Linked to table \"" + match.name + "\"");
+  }
+
+  document.getElementById("billTable").addEventListener("blur", function(){
+    tryLinkTypedTableName(getActiveOrder());
+  });
+  document.getElementById("billTable").addEventListener("keydown", function(e){
+    if(e.key === "Enter"){
+      e.preventDefault();
+      this.blur();
+    }
   });
 
   document.getElementById("billCustomer").addEventListener("input", function(){
