@@ -4899,7 +4899,7 @@ var qrcode = function() {
      ============================================================ */
   var LICENSE_API_BASE = "https://licensing-platform.pages.dev"; // set to the real deployed licensing-platform URL
   var PRODUCT_ID = "restaurant-pos";
-  var APP_VERSION = "0.1.43";
+  var APP_VERSION = "0.1.44";
   var DB_VERSION = "1";
   var LICENSED_TO = "";
 
@@ -6107,6 +6107,59 @@ var qrcode = function() {
       clearedBy: currentUser ? currentUser.name : "",
       reason: reason || ""
     });
+  }
+
+  // Shared by "Clear Items" (btnClearBill, below) and by discarding a
+  // whole walk-in order via its tab's close button (renderOrderTabs):
+  // resolves the reason a cancellation needs, reusing one already given
+  // earlier in this same order's session instead of asking twice. Calls
+  // cb(reason) once settled -- reason is "" when the order never had a
+  // KOT sent and has no earlier session cancellations, since nothing
+  // needs explaining then. Never calls cb if the reason prompt is
+  // dismissed, so the caller does nothing and the order is left as-is.
+  function resolveOrderCancelReason(order, cb){
+    var hadKotSent = !!(order.kotSent && Object.keys(order.kotSent).length > 0);
+    var hadEarlierCancellations = !!(order.cancelledSession && order.cancelledSession.items && Object.keys(order.cancelledSession.items).length > 0);
+    if(!hadKotSent && !hadEarlierCancellations){ cb(""); return; }
+    if(order.cancelledSession && order.cancelledSession.reason){ cb(order.cancelledSession.reason); return; }
+    askClearReason(function(reason){
+      if(reason === null) return; // cancelled the popup, order left untouched
+      cb(reason);
+    });
+  }
+
+  // Merges anything cancelled earlier in this order's session with
+  // whatever's in the cart right now into ONE consolidated audit-log
+  // entry (see migrations/0004_cleared_orders_log.sql), then clears the
+  // session marker. Used both when "Clear Items" empties an order that
+  // stays open, and when a whole walk-in order is discarded via its tab's
+  // close button -- previously that second path called discardOrder()
+  // directly with no log at all, so a KOT-sent walk-in order could be
+  // deleted with zero record (the bug this closes). Does nothing if
+  // there's nothing to log (order never had items and no earlier session
+  // cancellations).
+  function logOrderClear(order, reason){
+    var itemsMap = {};
+    if(order.cancelledSession && order.cancelledSession.items){
+      Object.keys(order.cancelledSession.items).forEach(function(k){
+        itemsMap[k] = Object.assign({}, order.cancelledSession.items[k]);
+      });
+    }
+    order.items.forEach(function(c){
+      if(itemsMap[c.key]){
+        itemsMap[c.key].qty += c.qty;
+      } else {
+        itemsMap[c.key] = {name: c.name, qty: c.qty, price: c.price};
+      }
+    });
+    var mergedItems = Object.values(itemsMap);
+    var hadKotSent = !!(order.kotSent && Object.keys(order.kotSent).length > 0);
+    var hadEarlierCancellations = !!(order.cancelledSession && order.cancelledSession.items && Object.keys(order.cancelledSession.items).length > 0);
+    if(mergedItems.length > 0){
+      var itemsValue = mergedItems.reduce(function(s, it){ return s + (it.price || 0) * (it.qty || 0); }, 0);
+      pushClearedOrderLogEntry(order, mergedItems, itemsValue, hadKotSent || hadEarlierCancellations, reason, false);
+    }
+    order.cancelledSession = null;
   }
 
   // Accumulates a single KOT-sent-item removal onto order.cancelledSession
@@ -8501,7 +8554,16 @@ var qrcode = function() {
         closeBtn.addEventListener("click", function(e){
           e.stopPropagation();
           if(o.items.length > 0 && !confirm("Discard this order (" + itemCount + " item(s))? This cannot be undone.")) return;
-          discardOrder(o.id);
+          // v0.1.44 fix: this used to call discardOrder(o.id) straight
+          // away, silently deleting the order with zero record -- unlike
+          // Clear Items (btnClearBill), which logs a KOT-sent cancel to
+          // the audit trail. A walk-in order (no table) taken, KOT'd, and
+          // then closed from this tab could vanish with no trace. Now it
+          // goes through the same reason-and-log path first.
+          resolveOrderCancelReason(o, function(reason){
+            logOrderClear(o, reason);
+            discardOrder(o.id);
+          });
         });
         closeBtn.addEventListener("keydown", function(e){
           if(e.key === "Enter" || e.key === " " || e.key === "Spacebar"){
@@ -9995,36 +10057,11 @@ var qrcode = function() {
     var hadKotSent = !!(order.kotSent && Object.keys(order.kotSent).length > 0);
     var hadEarlierCancellations = !!(order.cancelledSession && order.cancelledSession.items && Object.keys(order.cancelledSession.items).length > 0);
 
-    // Logs one consolidated entry per order to a permanent audit trail
-    // the Owner can review from Bill History -- see
-    // migrations/0004_cleared_orders_log.sql. This merges together
-    // anything cancelled earlier in this same order's session (see
-    // recordSessionCancellation, for items removed one at a time before
-    // this final clear) with whatever's still in the cart right now, so
-    // one order that had "2 rotis knocked off, then the rest cleared"
-    // produces ONE log row with everything in it, not a scattered pile
-    // of one-item entries.
-    function logAndClear(reason){
-      var itemsMap = {};
-      if(order.cancelledSession && order.cancelledSession.items){
-        Object.keys(order.cancelledSession.items).forEach(function(k){
-          itemsMap[k] = Object.assign({}, order.cancelledSession.items[k]);
-        });
-      }
-      order.items.forEach(function(c){
-        if(itemsMap[c.key]){
-          itemsMap[c.key].qty += c.qty;
-        } else {
-          itemsMap[c.key] = {name: c.name, qty: c.qty, price: c.price};
-        }
-      });
-      var mergedItems = Object.values(itemsMap);
-      var itemsValue = mergedItems.reduce(function(s, it){ return s + (it.price || 0) * (it.qty || 0); }, 0);
-      pushClearedOrderLogEntry(order, mergedItems, itemsValue, hadKotSent || hadEarlierCancellations, reason, false);
+    function doClear(reason){
+      logOrderClear(order, reason); // logs to the audit trail -- see logOrderClear
       order.items = [];
       order.discountValue = 0;
       order.kotSent = {};
-      order.cancelledSession = null;
       saveData();
       document.getElementById("discountValue").value = 0;
       renderCart();
@@ -10045,19 +10082,12 @@ var qrcode = function() {
     // under Bill History (see renderHistory) so a pattern (or a single
     // bad one) is easy to spot after the fact.
     if(hadKotSent || hadEarlierCancellations){
-      if(order.cancelledSession && order.cancelledSession.reason){
-        logAndClear(order.cancelledSession.reason);
-      } else {
-        askClearReason(function(reason){
-          if(reason === null) return; // cancelled the popup, order left untouched
-          logAndClear(reason);
-        });
-      }
+      resolveOrderCancelReason(order, doClear);
       return;
     }
 
     if(confirm("Clear all items from this order? The table/customer name will be kept.")){
-      logAndClear("");
+      doClear("");
     }
   });
 
