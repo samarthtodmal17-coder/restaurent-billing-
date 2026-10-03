@@ -4899,7 +4899,7 @@ var qrcode = function() {
      ============================================================ */
   var LICENSE_API_BASE = "https://licensing-platform.pages.dev"; // set to the real deployed licensing-platform URL
   var PRODUCT_ID = "restaurant-pos";
-  var APP_VERSION = "0.1.46";
+  var APP_VERSION = "0.1.47";
   var DB_VERSION = "1";
   var LICENSED_TO = "";
 
@@ -12357,22 +12357,53 @@ var qrcode = function() {
     showToast("Payment mode: " + sel.value);
   }
 
+  // v0.1.47: F7 now works the way an operator actually wants it to --
+  // if ANY table (or walk-in/parcel order) has a running bill, cycle
+  // through just those, in the floor plan's own left-to-right/top-to-
+  // bottom display order (data.tables), so you're always hopping between
+  // tables that actually need attention. Only once there are NO running
+  // bills anywhere does it fall back to walking every table in display
+  // order one by one (1st table, then 2nd, then 3rd...), opening each
+  // one's order (or starting a fresh one) -- handy for going table to
+  // table taking first orders when the floor is still empty.
   function switchToNextTableShortcut(){
-    // v0.1.46 fix: this used to cycle data.openOrders as-is, including
-    // the blank table-less walk-in placeholder that pickDefaultActiveOrder
-    // always keeps one of sitting open. Since Dine-in started requiring a
-    // table before you can add items (v0.1.45), that placeholder is open
-    // almost all the time -- so F7 very often just bounced you onto an
-    // empty nothing instead of the next real table, which read as "F7 is
-    // broken". Only cycle orders that are an actual table or have items
-    // on them.
-    var switchable = data.openOrders.filter(function(o){
-      return o.tableId || (o.items && o.items.length > 0);
+    var runningTableOrders = [];
+    data.tables.forEach(function(t){
+      var o = findOrderForTable(t.id);
+      if(o && o.items && o.items.length > 0) runningTableOrders.push(o);
     });
-    if(switchable.length < 2) return;
-    var idx = switchable.findIndex(function(o){ return o.id === activeOrderId; });
-    var nextIdx = (idx + 1) % switchable.length;
-    switchOrder(switchable[nextIdx].id);
+    var runningWalkIns = data.openOrders.filter(function(o){
+      return !o.tableId && o.items && o.items.length > 0;
+    });
+    var running = runningTableOrders.concat(runningWalkIns);
+
+    if(running.length >= 2){
+      var idx = running.findIndex(function(o){ return o.id === activeOrderId; });
+      var nextIdx = (idx + 1) % running.length;
+      switchOrder(running[nextIdx].id);
+      return;
+    }
+    if(running.length === 1 && running[0].id !== activeOrderId){
+      // Exactly one table (or walk-in) is actually running -- jump
+      // straight to it rather than needing two presses to notice it.
+      switchOrder(running[0].id);
+      return;
+    }
+
+    // No running bills to hop between (or we're already on the only one)
+    // -- walk the floor plan itself, in display order.
+    if(data.tables.length === 0) return;
+    var activeOrder = getActiveOrder();
+    var curTableIdx = data.tables.findIndex(function(t){ return t.id === (activeOrder && activeOrder.tableId); });
+    var nextTableIdx = (curTableIdx + 1) % data.tables.length;
+    var nextTable = data.tables[nextTableIdx];
+    var nextOrder = findOrderForTable(nextTable.id);
+    if(nextOrder){
+      switchOrder(nextOrder.id);
+    } else {
+      createNewOrder(nextTable.id, nextTable.name);
+      renderBillingScreen();
+    }
   }
 
   document.addEventListener("keydown", function(e){
