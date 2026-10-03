@@ -4899,7 +4899,7 @@ var qrcode = function() {
      ============================================================ */
   var LICENSE_API_BASE = "https://licensing-platform.pages.dev"; // set to the real deployed licensing-platform URL
   var PRODUCT_ID = "restaurant-pos";
-  var APP_VERSION = "0.1.45";
+  var APP_VERSION = "0.1.46";
   var DB_VERSION = "1";
   var LICENSED_TO = "";
 
@@ -9946,6 +9946,7 @@ var qrcode = function() {
   });
 
   document.getElementById("billTable").addEventListener("input", function(){
+    if(this.dataset.tableLookupMode) return; // F3 jump-to-table mode -- see jumpToTableByName, not a free-text edit
     var order = getActiveOrder();
     // Defensive guard: table-linked orders should never have this typed
     // over (the field is also set readonly), so their name always stays
@@ -9958,16 +9959,17 @@ var qrcode = function() {
   });
 
   // If what's typed into Table / Room matches an existing floor-plan
-  // table by name (e.g. F3 then typing "5" when Table 5 already exists),
-  // link this order to that REAL table instead of leaving it as
-  // disconnected free text. Previously typing an existing table's name
-  // here only ever set a plain string -- the real table tile stayed
+  // table by name, link this order to that REAL table instead of leaving
+  // it as disconnected free text. Previously typing an existing table's
+  // name here only ever set a plain string -- the real table tile stayed
   // "Free" on the floor plan while a second, untracked walk-in order with
   // a matching name existed alongside it, which read as "it's making a
   // new one instead of taking the existing table". Only takes over a
   // table that's genuinely free right now (no items on it); if that table
   // already has a running bill, this sends the user to open that instead
-  // of silently duplicating it.
+  // of silently duplicating it. Used when typing into a still-unlinked
+  // walk-in order's field normally (not via F3 -- see jumpToTableByName
+  // for that).
   function tryLinkTypedTableName(order){
     if(!order || order.tableId) return; // already linked -- field is readonly
     var typed = (order.table || "").trim();
@@ -9991,12 +9993,50 @@ var qrcode = function() {
     showToast("Linked to table \"" + match.name + "\"");
   }
 
+  // F3's "jump to any table" mode (see the F3 handler above): whatever was
+  // typed is looked up against the real floor-plan tables by name, and if
+  // found, the Billing screen SWITCHES to that table's order (its running
+  // bill if it has one, otherwise a fresh order for it) -- this does not
+  // rename or relink whatever order was active before. If nothing matches,
+  // the user is told so and the field reverts, instead of silently
+  // creating yet another untracked walk-in order with that typed name.
+  function jumpToTableByName(typedName){
+    var name = (typedName || "").trim();
+    if(!name){ renderBillingScreen(); return; }
+    var match = data.tables.find(function(t){ return t.name.trim().toLowerCase() === name.toLowerCase(); });
+    if(!match){
+      showToast("Table \"" + name + "\" not found");
+      renderBillingScreen(); // restores the field to the current order's real value
+      return;
+    }
+    var existingOrder = findOrderForTable(match.id);
+    if(existingOrder){
+      switchOrder(existingOrder.id);
+    } else {
+      createNewOrder(match.id, match.name);
+      renderBillingScreen();
+    }
+    showToast("Switched to table \"" + match.name + "\"");
+  }
+
   document.getElementById("billTable").addEventListener("blur", function(){
+    if(this.dataset.tableLookupMode){
+      delete this.dataset.tableLookupMode;
+      this.placeholder = "e.g. Table 4 / Room 201";
+      jumpToTableByName(this.value);
+      return;
+    }
     tryLinkTypedTableName(getActiveOrder());
   });
   document.getElementById("billTable").addEventListener("keydown", function(e){
     if(e.key === "Enter"){
       e.preventDefault();
+      this.blur();
+    } else if(e.key === "Escape" && this.dataset.tableLookupMode){
+      e.preventDefault();
+      delete this.dataset.tableLookupMode;
+      this.placeholder = "e.g. Table 4 / Room 201";
+      renderBillingScreen(); // revert without looking anything up
       this.blur();
     }
   });
@@ -12318,10 +12358,21 @@ var qrcode = function() {
   }
 
   function switchToNextTableShortcut(){
-    if(data.openOrders.length < 2) return;
-    var idx = data.openOrders.findIndex(function(o){ return o.id === activeOrderId; });
-    var nextIdx = (idx + 1) % data.openOrders.length;
-    switchOrder(data.openOrders[nextIdx].id);
+    // v0.1.46 fix: this used to cycle data.openOrders as-is, including
+    // the blank table-less walk-in placeholder that pickDefaultActiveOrder
+    // always keeps one of sitting open. Since Dine-in started requiring a
+    // table before you can add items (v0.1.45), that placeholder is open
+    // almost all the time -- so F7 very often just bounced you onto an
+    // empty nothing instead of the next real table, which read as "F7 is
+    // broken". Only cycle orders that are an actual table or have items
+    // on them.
+    var switchable = data.openOrders.filter(function(o){
+      return o.tableId || (o.items && o.items.length > 0);
+    });
+    if(switchable.length < 2) return;
+    var idx = switchable.findIndex(function(o){ return o.id === activeOrderId; });
+    var nextIdx = (idx + 1) % switchable.length;
+    switchOrder(switchable[nextIdx].id);
   }
 
   document.addEventListener("keydown", function(e){
@@ -12339,7 +12390,17 @@ var qrcode = function() {
     } else if(e.key === "F3"){
       e.preventDefault();
       var t = document.getElementById("billTable");
-      t.focus(); t.select();
+      // v0.1.46 fix: F3 now always lets you type a table to jump to, even
+      // when the current order is already linked to a table (normally
+      // this field is readonly then, to stop a stray keystroke silently
+      // renaming it -- see renderBillingScreen). Clearing it and marking
+      // tableLookupMode means "whatever gets typed next is a table to
+      // switch to", handled on Enter/blur below (see jumpToTableByName).
+      t.readOnly = false;
+      t.value = "";
+      t.dataset.tableLookupMode = "1";
+      t.placeholder = "Type a table name/number and press Enter";
+      t.focus();
     } else if(e.key === "F4"){
       e.preventDefault();
       var c = document.getElementById("billCustomer");
