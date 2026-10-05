@@ -4900,7 +4900,7 @@ var qrcode = function() {
      ============================================================ */
   var LICENSE_API_BASE = "https://licensing-platform.pages.dev"; // set to the real deployed licensing-platform URL
   var PRODUCT_ID = "restaurant-pos";
-  var APP_VERSION = "0.1.50";
+  var APP_VERSION = "0.1.51";
   var DB_VERSION = "1";
   var LICENSED_TO = "";
 
@@ -7384,7 +7384,24 @@ var qrcode = function() {
       recSaveBtn.className = "btn small";
       recSaveBtn.textContent = "Save Recipe";
       recSaveBtn.addEventListener("click", function(){
-        item.recipe = editingRecipeRows.filter(function(r){ return r.quantityPerUnit > 0; });
+        // v0.1.51 fix: an ingredient picked + quantity typed in the "add"
+        // row but never confirmed with "+ Add" used to be silently
+        // thrown away on Save, so the recipe saved EMPTY (e.g. Pepsi, qty
+        // 1, then Save Recipe -> still "Add Recipe"). Pick it up here.
+        if(typeof invSelect !== "undefined" && typeof qtyNewInput !== "undefined" && invSelect && invSelect.value){
+          var pendingQty = parseFloat(qtyNewInput.value);
+          if(!isNaN(pendingQty) && pendingQty > 0 &&
+             !editingRecipeRows.some(function(r){ return r.inventoryItemId === invSelect.value; })){
+            editingRecipeRows.push({inventoryItemId: invSelect.value, quantityPerUnit: pendingQty});
+          }
+        }
+        var newRecipe = editingRecipeRows.filter(function(r){ return r.quantityPerUnit > 0; });
+        if(!newRecipe.length && !(item.recipe && item.recipe.length)){
+          // nothing to save and nothing existing to clear -- stay open
+          showToast("Pick an ingredient, enter a quantity (e.g. 1) and tap + Add, then Save Recipe");
+          return;
+        }
+        if(newRecipe.length){ item.recipe = newRecipe; } else { delete item.recipe; }
         recipeEditingItemId = null;
         editingRecipeRows = null;
         saveData();
