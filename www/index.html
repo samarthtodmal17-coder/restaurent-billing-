@@ -2203,13 +2203,6 @@
       <button class="btn danger" id="btnLogWastage" style="margin-top:12px;">Log Wastage</button>
     </div>
 
-    <div class="card" id="cardInventoryRecipes">
-      <h2>Recipes (Ingredients per Dish)</h2>
-      <p class="muted">Every menu item with the ingredients it uses per sale. Tap Edit to change quantities, remove or add ingredients. Stock is deducted automatically from these recipes when a bill is saved.</p>
-      <input type="text" id="invRecipeSearch" placeholder="Search dish..." style="margin-bottom:8px;">
-      <div id="invRecipesList"></div>
-    </div>
-
     <div class="card" id="cardInventoryLowStock">
       <h2>Low-Stock Alerts</h2>
       <div id="invLowStockList"></div>
@@ -4907,7 +4900,7 @@ var qrcode = function() {
      ============================================================ */
   var LICENSE_API_BASE = "https://licensing-platform.pages.dev"; // set to the real deployed licensing-platform URL
   var PRODUCT_ID = "restaurant-pos";
-  var APP_VERSION = "0.1.49";
+  var APP_VERSION = "0.1.50";
   var DB_VERSION = "1";
   var LICENSED_TO = "";
 
@@ -4994,6 +4987,7 @@ var qrcode = function() {
   var editingVariants = null; // working copy of variants while editing
   var recipeEditingItemId = null; // item currently showing the Recipe (ingredients used) editor
   var editingRecipeRows = null; // working copy of item.recipe while editing
+  var recipeViewMode = false; // true = showing the current recipe read-only before editing
   var currentReceiptBill = null; // last bill shown in the receipt preview
   var currentKotTicket = null; // last {order, ticketItems, isAddOn} shown as a KOT
 
@@ -6284,7 +6278,6 @@ var qrcode = function() {
     "cardInventoryAddStock": true,  // Add Stock (Quick)
     "cardInventoryPurchase": true,  // Record a Purchase
     "cardInventoryWastage": true,   // Log Wastage / Spoilage
-    "cardInventoryRecipes": true,   // Recipes (ingredients per dish)
     "cardInventoryLowStock": true,  // Low-Stock Alerts
     "cardInventoryValuation": true, // Stock Valuation Report
     "screen-history-card-0": true,  // Bill History
@@ -7243,6 +7236,10 @@ var qrcode = function() {
     btn.addEventListener("click", function(){
       recipeEditingItemId = item.id;
       editingRecipeRows = item.recipe ? JSON.parse(JSON.stringify(item.recipe)) : [];
+      // v0.1.50: opening an item that already has a recipe shows it first
+      // (view mode) with an Edit Recipe button; an item with no recipe
+      // goes straight to the editor to add one.
+      recipeViewMode = count > 0;
       renderMenuScreen();
     });
     return btn;
@@ -7259,6 +7256,34 @@ var qrcode = function() {
       recTitle.className = "title";
       recTitle.textContent = "Recipe (Ingredients Used) — " + item.name;
       recBox.appendChild(recTitle);
+
+      if(recipeViewMode){
+        // ---- View mode: current recipe, read-only, with Edit button ----
+        (item.recipe || []).forEach(function(r){
+          var invV = findInventoryItem(r.inventoryItemId);
+          var line = document.createElement("div");
+          line.className = "variant-edit-row";
+          line.textContent = "• " + (invV ? invV.name : "(deleted ingredient)") + " — " + r.quantityPerUnit + " " + (invV ? invV.unitLabel : "") + " per sale";
+          recBox.appendChild(line);
+        });
+        var viewActions = document.createElement("div");
+        viewActions.style.cssText = "margin-top:10px; display:flex; gap:8px;";
+        var editRecBtn = document.createElement("button");
+        editRecBtn.className = "btn small";
+        editRecBtn.textContent = "Edit Recipe";
+        editRecBtn.addEventListener("click", function(){ recipeViewMode = false; renderMenuScreen(); });
+        var closeRecBtn = document.createElement("button");
+        closeRecBtn.className = "btn small secondary";
+        closeRecBtn.textContent = "Close";
+        closeRecBtn.addEventListener("click", function(){
+          recipeEditingItemId = null; editingRecipeRows = null; recipeViewMode = false; renderMenuScreen();
+        });
+        viewActions.appendChild(editRecBtn);
+        viewActions.appendChild(closeRecBtn);
+        recBox.appendChild(viewActions);
+        list.appendChild(recBox);
+        return;
+      }
 
       if(data.inventoryItems.length === 0){
         var noInv = document.createElement("p");
@@ -9169,142 +9194,6 @@ var qrcode = function() {
     });
   }
 
-  // v0.1.48: Recipes card on the Inventory screen -- shows every menu
-  // item's existing recipe (previously only reachable as a bare
-  // "Recipe (N)" button inside Menu & Rates, with nothing visible until
-  // clicked) and lets it be edited right here. Edits write straight to
-  // item.recipe, the same field the Menu & Rates editor and the
-  // auto-deduction hooks use.
-  var invRecipeEditId = null;
-  var invRecipeRows = null;
-
-  function renderInvRecipesList(){
-    var list = document.getElementById("invRecipesList");
-    if(!list) return;
-    list.innerHTML = "";
-    var q = ((document.getElementById("invRecipeSearch") || {}).value || "").trim().toLowerCase();
-    var items = data.menuItems.filter(function(m){
-      return !q || m.name.toLowerCase().indexOf(q) !== -1 || (m.code && String(m.code).toLowerCase().indexOf(q) !== -1);
-    }).sort(function(a, b){
-      // dishes that already have a recipe first, then A-Z
-      var ar = a.recipe && a.recipe.length ? 0 : 1, br = b.recipe && b.recipe.length ? 0 : 1;
-      return ar - br || a.name.localeCompare(b.name);
-    });
-    if(!items.length){
-      list.innerHTML = '<div class="empty-state">No menu items found.</div>';
-      return;
-    }
-    items.forEach(function(item){
-      var box = document.createElement("div");
-      box.className = "edit-box";
-      var title = document.createElement("div");
-      title.className = "title";
-      title.textContent = item.name;
-      box.appendChild(title);
-
-      if(invRecipeEditId === item.id){
-        invRecipeRows.forEach(function(r, rIdx){
-          var inv = findInventoryItem(r.inventoryItemId);
-          var row = document.createElement("div");
-          row.className = "variant-edit-row";
-          var nameSpan = document.createElement("span");
-          nameSpan.style.flex = "1 1 auto";
-          nameSpan.textContent = inv ? inv.name : "(deleted ingredient)";
-          var qty = document.createElement("input");
-          qty.type = "number"; qty.min = "0"; qty.step = "0.01";
-          qty.value = r.quantityPerUnit; qty.style.flex = "0 0 90px";
-          qty.addEventListener("input", function(){ r.quantityPerUnit = parseFloat(this.value) || 0; });
-          var unit = document.createElement("span");
-          unit.className = "muted"; unit.style.flex = "0 0 auto";
-          unit.textContent = inv ? inv.unitLabel : "";
-          var rm = document.createElement("button");
-          rm.className = "btn small danger"; rm.textContent = "✕"; rm.style.flex = "0 0 auto";
-          rm.addEventListener("click", function(){ invRecipeRows.splice(rIdx, 1); renderInvRecipesList(); });
-          row.appendChild(nameSpan); row.appendChild(qty); row.appendChild(unit); row.appendChild(rm);
-          box.appendChild(row);
-        });
-
-        var usedIds = invRecipeRows.map(function(r){ return r.inventoryItemId; });
-        var avail = data.inventoryItems.filter(function(i){ return usedIds.indexOf(i.id) === -1; });
-        var addRow = document.createElement("div");
-        addRow.className = "variant-edit-row";
-        var sel = document.createElement("select");
-        sel.style.flex = "1 1 auto";
-        if(!avail.length){
-          var o = document.createElement("option");
-          o.value = ""; o.textContent = data.inventoryItems.length ? "All ingredients already added" : "No ingredients set up yet";
-          sel.appendChild(o); sel.disabled = true;
-        } else {
-          avail.slice().sort(function(a, b){ return a.name.localeCompare(b.name); }).forEach(function(i){
-            var o = document.createElement("option");
-            o.value = i.id; o.textContent = i.name + " (" + i.unitLabel + ")";
-            sel.appendChild(o);
-          });
-        }
-        var nq = document.createElement("input");
-        nq.type = "number"; nq.min = "0"; nq.step = "0.01"; nq.placeholder = "Qty per sale"; nq.style.flex = "0 0 90px";
-        var add = document.createElement("button");
-        add.className = "btn small secondary"; add.textContent = "+ Add"; add.style.flex = "0 0 auto";
-        add.disabled = !avail.length;
-        add.addEventListener("click", function(){
-          if(!sel.value){ showToast("Pick an ingredient first"); return; }
-          var qv = parseFloat(nq.value);
-          if(isNaN(qv) || qv <= 0){ showToast("Enter a quantity greater than 0"); return; }
-          invRecipeRows.push({inventoryItemId: sel.value, quantityPerUnit: qv});
-          renderInvRecipesList();
-        });
-        addRow.appendChild(sel); addRow.appendChild(nq); addRow.appendChild(add);
-        box.appendChild(addRow);
-
-        var actions = document.createElement("div");
-        actions.style.cssText = "margin-top:10px; display:flex; gap:8px;";
-        var save = document.createElement("button");
-        save.className = "btn small"; save.textContent = "Save Recipe";
-        save.addEventListener("click", function(){
-          var cleaned = invRecipeRows.filter(function(r){ return r.quantityPerUnit > 0; });
-          if(cleaned.length){ item.recipe = cleaned; } else { delete item.recipe; }
-          invRecipeEditId = null; invRecipeRows = null;
-          saveData();
-          renderInvRecipesList();
-          if(typeof renderMenuScreen === "function") renderMenuScreen();
-          showToast("Recipe updated");
-        });
-        var cancel = document.createElement("button");
-        cancel.className = "btn small secondary"; cancel.textContent = "Cancel";
-        cancel.addEventListener("click", function(){ invRecipeEditId = null; invRecipeRows = null; renderInvRecipesList(); });
-        actions.appendChild(save); actions.appendChild(cancel);
-        box.appendChild(actions);
-      } else {
-        if(item.recipe && item.recipe.length){
-          item.recipe.forEach(function(r){
-            var inv = findInventoryItem(r.inventoryItemId);
-            var line = document.createElement("div");
-            line.className = "muted";
-            line.textContent = "• " + (inv ? inv.name : "(deleted ingredient)") + " — " + r.quantityPerUnit + " " + (inv ? inv.unitLabel : "");
-            box.appendChild(line);
-          });
-        } else {
-          var none = document.createElement("div");
-          none.className = "muted";
-          none.textContent = "No recipe yet";
-          box.appendChild(none);
-        }
-        var edit = document.createElement("button");
-        edit.className = "btn small secondary";
-        edit.style.marginTop = "8px";
-        edit.textContent = (item.recipe && item.recipe.length) ? "Edit Recipe" : "Add Recipe";
-        edit.addEventListener("click", function(){
-          invRecipeEditId = item.id;
-          invRecipeRows = item.recipe ? JSON.parse(JSON.stringify(item.recipe)) : [];
-          renderInvRecipesList();
-        });
-        box.appendChild(edit);
-      }
-      list.appendChild(box);
-    });
-  }
-  document.getElementById("invRecipeSearch").addEventListener("input", renderInvRecipesList);
-
   document.getElementById("menuManageSearch").addEventListener("input", function(){ renderMenuScreen(); });
   document.getElementById("menuManageSearch").addEventListener("keydown", function(e){
     if(e.key === "Escape"){ this.value = ""; renderMenuScreen(); }
@@ -9313,7 +9202,6 @@ var qrcode = function() {
   function renderInventoryScreen(){
     populateInvUnitLabelSelect();
     applyInventoryRoleVisibility();
-    renderInvRecipesList();
     renderInvItemsList();
     populateInvItemSelect("invAddStockItem");
     populateInvItemSelect("invPurchaseItem");
