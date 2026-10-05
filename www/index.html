@@ -2066,6 +2066,7 @@
     <div class="card" id="cardMenuItems">
       <h2>Menu Items</h2>
       <div id="menuStatsStrip" class="menu-stats-strip"></div>
+      <input type="text" id="menuManageSearch" placeholder="🔍 Search menu items by name or code..." autocomplete="off" style="margin-bottom:8px;">
       <label>Sort By</label>
       <select id="menuManageSortMode">
         <option value="">Default Order</option>
@@ -4906,7 +4907,7 @@ var qrcode = function() {
      ============================================================ */
   var LICENSE_API_BASE = "https://licensing-platform.pages.dev"; // set to the real deployed licensing-platform URL
   var PRODUCT_ID = "restaurant-pos";
-  var APP_VERSION = "0.1.48";
+  var APP_VERSION = "0.1.49";
   var DB_VERSION = "1";
   var LICENSED_TO = "";
 
@@ -7058,8 +7059,17 @@ var qrcode = function() {
     // category, so a large menu (many categories) is easier to scan.
     var list = document.getElementById("menuManageList");
     list.innerHTML = "";
+    // v0.1.49: search box above the list -- filters by name or item code.
+    var menuSearchQ = ((document.getElementById("menuManageSearch") || {}).value || "").trim().toLowerCase();
+    function menuItemMatchesSearch(i){
+      if(!menuSearchQ) return true;
+      return (i.name || "").toLowerCase().indexOf(menuSearchQ) !== -1 ||
+             (i.code !== undefined && i.code !== null && String(i.code).toLowerCase().indexOf(menuSearchQ) !== -1);
+    }
     if(data.menuItems.length === 0){
       list.innerHTML = '<div class="empty-state">No menu items yet. Add your first item above.</div>';
+    } else if(menuSearchQ && !data.menuItems.some(menuItemMatchesSearch)){
+      list.innerHTML = '<div class="empty-state">No menu items match "' + escapeHtml(menuSearchQ) + '".</div>';
     }
 
     // directItems render first inside the section body (no sub-header);
@@ -7096,7 +7106,9 @@ var qrcode = function() {
 
       var body = document.createElement("div");
       body.className = "category-section-body";
-      var isCollapsed = !!collapsedCategories[sectionKey];
+      // While searching, show every section that has a match open, so
+      // results aren't hidden inside a collapsed category.
+      var isCollapsed = !menuSearchQ && !!collapsedCategories[sectionKey];
       if(isCollapsed){
         body.classList.add("collapsed");
         chevron.classList.add("collapsed");
@@ -7130,13 +7142,13 @@ var qrcode = function() {
 
     data.categories.forEach(function(c){
       var directItems = sortMenuItemsBy(data.menuItems.filter(function(i){
-        return i.categoryId === c.id && (!i.subcategoryId || !data.subcategories.some(function(s){ return s.id === i.subcategoryId; }));
+        return menuItemMatchesSearch(i) && i.categoryId === c.id && (!i.subcategoryId || !data.subcategories.some(function(s){ return s.id === i.subcategoryId; }));
       }), menuManageSortMode);
       var subGroups = data.subcategories.filter(function(s){ return s.categoryId === c.id; }).map(function(s){
         return {
           key: s.id,
           title: s.name,
-          items: sortMenuItemsBy(data.menuItems.filter(function(i){ return i.subcategoryId === s.id; }), menuManageSortMode)
+          items: sortMenuItemsBy(data.menuItems.filter(function(i){ return menuItemMatchesSearch(i) && i.subcategoryId === s.id; }), menuManageSortMode)
         };
       });
       buildCategorySection("cat_" + c.id, c.name, directItems, subGroups);
@@ -7144,7 +7156,7 @@ var qrcode = function() {
 
     // items without a valid category
     var orphan = sortMenuItemsBy(data.menuItems.filter(function(i){
-      return !data.categories.some(function(c){ return c.id === i.categoryId; });
+      return menuItemMatchesSearch(i) && !data.categories.some(function(c){ return c.id === i.categoryId; });
     }), menuManageSortMode);
     if(orphan.length){
       buildCategorySection("uncategorized", "Uncategorized", orphan);
@@ -9292,6 +9304,11 @@ var qrcode = function() {
     });
   }
   document.getElementById("invRecipeSearch").addEventListener("input", renderInvRecipesList);
+
+  document.getElementById("menuManageSearch").addEventListener("input", function(){ renderMenuScreen(); });
+  document.getElementById("menuManageSearch").addEventListener("keydown", function(e){
+    if(e.key === "Escape"){ this.value = ""; renderMenuScreen(); }
+  });
 
   function renderInventoryScreen(){
     populateInvUnitLabelSelect();
