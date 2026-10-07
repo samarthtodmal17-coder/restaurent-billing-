@@ -1388,6 +1388,12 @@
     #cardCurrentBill .totals-box{ padding:8px 10px; margin-top:6px; }
     #cardCurrentBill .totals-box .line{ padding:2px 0; font-size:12.5px; }
     #cardCurrentBill .totals-box .line.grand{ font-size:15px; padding-top:6px; margin-top:4px; }
+    /* Bill TOTAL must stand out from the other amounts: big, extra-bold, near-black. */
+    #totalsBox .line.grand, #cardCurrentBill .totals-box .line.grand{
+      font-size:30px; font-weight:900; line-height:1.15; color:var(--text);
+      border-top:2px solid var(--text); padding-top:10px; margin-top:8px; align-items:center;
+    }
+    #totalsBox .line.grand span:last-child{ font-size:34px; font-weight:900; color:var(--text); }
     .cart-actions-bar .btn.secondary{ padding:8px 10px; font-size:12.5px; }
     #btnSaveBill{ font-size:14px; padding:11px 16px; }
 
@@ -4900,7 +4906,7 @@ var qrcode = function() {
      ============================================================ */
   var LICENSE_API_BASE = "https://licensing-platform.pages.dev"; // set to the real deployed licensing-platform URL
   var PRODUCT_ID = "restaurant-pos";
-  var APP_VERSION = "0.1.51";
+  var APP_VERSION = "0.1.52";
   var DB_VERSION = "1";
   var LICENSED_TO = "";
 
@@ -11763,7 +11769,7 @@ var qrcode = function() {
       html += '<div style="display:flex;justify-content:space-between;">📦 Packing Charge<span>' + (bill.currency + bill.packingCharge.toFixed(2)) + '</span></div>';
     }
     html += '<hr>';
-    html += '<div style="display:flex;justify-content:space-between; font-weight:700; font-size:14px;">TOTAL<span>' + (bill.currency + bill.total.toFixed(2)) + '</span></div>';
+    html += '<div style="display:flex;justify-content:space-between;align-items:center; font-weight:900; font-size:20px; color:#000; border-top:2px solid #000; padding-top:4px;">TOTAL<span>' + (bill.currency + bill.total.toFixed(2)) + '</span></div>';
     if(bill.splitPayments && bill.splitPayments.length){
       html += '<div style="margin-top:4px; font-weight:700;">Paid via:</div>';
       bill.splitPayments.forEach(function(p){
