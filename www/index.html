@@ -1388,12 +1388,6 @@
     #cardCurrentBill .totals-box{ padding:8px 10px; margin-top:6px; }
     #cardCurrentBill .totals-box .line{ padding:2px 0; font-size:12.5px; }
     #cardCurrentBill .totals-box .line.grand{ font-size:15px; padding-top:6px; margin-top:4px; }
-    /* Bill TOTAL must stand out from the other amounts: big, extra-bold, near-black. */
-    #totalsBox .line.grand, #cardCurrentBill .totals-box .line.grand{
-      font-size:30px; font-weight:900; line-height:1.15; color:var(--text);
-      border-top:2px solid var(--text); padding-top:10px; margin-top:8px; align-items:center;
-    }
-    #totalsBox .line.grand span:last-child{ font-size:34px; font-weight:900; color:var(--text); }
     .cart-actions-bar .btn.secondary{ padding:8px 10px; font-size:12.5px; }
     #btnSaveBill{ font-size:14px; padding:11px 16px; }
 
@@ -2495,6 +2489,12 @@
         <input type="checkbox" id="showUpiQr">
         <span>Show payment QR on printed/shared receipts</span>
       </label>
+    </div>
+
+    <div class="card settings-full" id="cardBillDesign">
+      <h2>🧾 Bill Design</h2>
+      <p class="muted">Choose how printed and previewed customer bills look. Tap a design to select it -- it applies to the very next bill. Your paper width (above) still decides the size.</p>
+      <div id="billDesignGrid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:12px;margin-top:10px;"></div>
     </div>
 
     <div class="card settings-full">
@@ -4906,7 +4906,7 @@ var qrcode = function() {
      ============================================================ */
   var LICENSE_API_BASE = "https://licensing-platform.pages.dev"; // set to the real deployed licensing-platform URL
   var PRODUCT_ID = "restaurant-pos";
-  var APP_VERSION = "0.1.53";
+  var APP_VERSION = "0.1.54";
   var DB_VERSION = "1";
   var LICENSED_TO = "";
 
@@ -4939,6 +4939,7 @@ var qrcode = function() {
       lastBillDateKey: "",
       upiId: "",
       showUpiQr: false,
+      billDesign: "classic",
     },
     categories: [
       {id: "cat1", name: "Food"},
@@ -5189,7 +5190,7 @@ var qrcode = function() {
           kotPaperWidthCustom: biz.kot_paper_width_custom, packingChargeType: biz.packing_charge_type,
           packingChargeValue: biz.packing_charge_value, rawBtAutoPrint: !!biz.rawbt_auto_print,
           dailySeq: biz.daily_seq, lastBillDateKey: biz.last_bill_date_key, upiId: biz.upi_id,
-          showUpiQr: !!biz.show_upi_qr
+          showUpiQr: !!biz.show_upi_qr, billDesign: biz.bill_design || "classic"
         };
 
         var categories = categoryRows.map(function(r){ return {id: r.id, name: r.name}; });
@@ -5623,12 +5624,12 @@ var qrcode = function() {
         "UPDATE business_settings SET name=$1, logo=$2, address=$3, phone=$4, footer=$5, currency=$6, " +
         "tax_label=$7, tax_percent=$8, service_charge_percent=$9, bill_prefix=$10, receipt_paper_width=$11, " +
         "receipt_paper_width_custom=$12, kot_paper_width=$13, kot_paper_width_custom=$14, packing_charge_type=$15, " +
-        "packing_charge_value=$16, rawbt_auto_print=$17, daily_seq=$18, last_bill_date_key=$19, upi_id=$20, show_upi_qr=$21 " +
+        "packing_charge_value=$16, rawbt_auto_print=$17, daily_seq=$18, last_bill_date_key=$19, upi_id=$20, show_upi_qr=$21, bill_design=$22 " +
         "WHERE id=1",
         [biz.name, biz.logo, biz.address, biz.phone, biz.footer, biz.currency, biz.taxLabel, biz.taxPercent,
          biz.serviceChargePercent, biz.billPrefix, biz.receiptPaperWidth, biz.receiptPaperWidthCustom,
          biz.kotPaperWidth, biz.kotPaperWidthCustom, biz.packingChargeType, biz.packingChargeValue,
-         biz.rawBtAutoPrint ? 1 : 0, biz.dailySeq, biz.lastBillDateKey, biz.upiId, biz.showUpiQr ? 1 : 0]
+         biz.rawBtAutoPrint ? 1 : 0, biz.dailySeq, biz.lastBillDateKey, biz.upiId, biz.showUpiQr ? 1 : 0, biz.billDesign || "classic"]
       )
       .then(function(){ return runSequential(data.categories, function(c, i){
         // v0.1.40 fix: was INSERT OR REPLACE. An audit confirmed this app's
@@ -6519,6 +6520,56 @@ var qrcode = function() {
     }
 
     renderStaffAccountsList();
+    renderBillDesignPicker();
+  }
+
+  // Sample bill used for the live previews in Settings -> Bill Design.
+  function sampleBillForPreview(){
+    var cur = data.business.currency || "₹";
+    return {
+      billNo: "INV-1042", date: new Date().toISOString(), table: "4", customer: "", isParcel: false,
+      currency: cur, taxLabel: data.business.taxLabel || "GST", taxByRate: {"5": 33.5},
+      items: [{name: "Paneer Tikka", qty: 1, price: 240}, {name: "Butter Naan", qty: 2, price: 45},
+              {name: "Dal Makhani", qty: 1, price: 260}, {name: "Pepsi", qty: 2, price: 40}],
+      subtotal: 670, discountAmount: 0, tax: 33.5, service: 0, packingCharge: 0, total: 703.5, paymentMode: "UPI"
+    };
+  }
+
+  function renderBillDesignPicker(){
+    var grid = document.getElementById("billDesignGrid");
+    if(!grid) return;
+    var current = data.business.billDesign || "classic";
+    grid.innerHTML = "";
+    BILL_DESIGNS.forEach(function(d){
+      var card = document.createElement("div");
+      var selected = (d.id === current);
+      card.style.cssText = "cursor:pointer;border-radius:10px;padding:8px;background:var(--surface-soft);border:" + (selected ? "3px solid var(--primary)" : "1px solid var(--border)") + ";";
+      card.setAttribute("role", "button");
+      card.tabIndex = 0;
+      var title = document.createElement("div");
+      title.style.cssText = "font-weight:700;margin-bottom:2px;";
+      title.textContent = (selected ? "✓ " : "") + d.name;
+      var hint = document.createElement("div");
+      hint.className = "muted";
+      hint.style.marginBottom = "6px";
+      hint.textContent = d.hint;
+      var preview = document.createElement("div");
+      preview.className = "receipt-inner";
+      preview.style.cssText = "max-width:none;padding:8px;font-size:10px;pointer-events:none;";
+      var sample = sampleBillForPreview();
+      var saved = LICENSED_TO; LICENSED_TO = "";
+      try{ preview.innerHTML = buildReceiptHtml(sample, d.id); } finally { LICENSED_TO = saved; }
+      card.appendChild(title); card.appendChild(hint); card.appendChild(preview);
+      function choose(){
+        data.business.billDesign = d.id;
+        saveData();
+        renderBillDesignPicker();
+        showToast("Bill design: " + d.name);
+      }
+      card.addEventListener("click", choose);
+      card.addEventListener("keydown", function(e){ if(e.key === "Enter" || e.key === " "){ e.preventDefault(); choose(); } });
+      grid.appendChild(card);
+    });
   }
 
   document.getElementById("receiptPaperWidth").addEventListener("change", function(){
@@ -11741,80 +11792,152 @@ var qrcode = function() {
 
   document.getElementById("shareWhatsappPhone").addEventListener("input", updateWhatsappShareLink);
 
+  /* ---------- Bill designs ----------
+     Owner picks one under Settings -> Bill design (data.business.billDesign).
+     "classic" is the original layout. All designs share the same data pieces
+     (items, charges, payment, QR, footer); only the arrangement differs. */
+  var BILL_DESIGNS = [
+    {id: "classic", name: "A. Classic", hint: "Original layout with a large total"},
+    {id: "blackbar", name: "B. Black total bar", hint: "Total in a black bar, hard to miss"},
+    {id: "bands", name: "G. Section bands", hint: "Black header and total, labelled sections"},
+    {id: "premium", name: "J. Premium centered", hint: "Elegant centered serif look"}
+  ];
+
+  function buildReceiptHtml(bill, design){
+    var b = data.business;
+    var cur = bill.currency;
+    function money(v){ return cur + Number(v).toFixed(2); }
+    function row(label, value, extra){
+      return '<div style="display:flex;justify-content:space-between;' + (extra || "") + '"><span>' + label + '</span><span>' + value + '</span></div>';
+    }
+    // charge lines shared by every design
+    var charges = [];
+    charges.push(row("Subtotal", money(bill.subtotal)));
+    if(bill.discountAmount > 0) charges.push(row("Discount", "-" + money(bill.discountAmount)));
+    if(bill.taxByRate && Object.keys(bill.taxByRate).length){
+      Object.keys(bill.taxByRate).sort(function(a,b){ return parseFloat(a)-parseFloat(b); }).forEach(function(r){
+        if(bill.taxByRate[r] > 0) charges.push(row(escapeHtml(bill.taxLabel) + " (" + r + "%)", money(bill.taxByRate[r])));
+      });
+    } else if(bill.taxPercent){
+      charges.push(row(escapeHtml(bill.taxLabel) + " (" + bill.taxPercent + "%)", money(bill.tax)));
+    }
+    if(bill.serviceChargePercent) charges.push(row("Service (" + bill.serviceChargePercent + "%)", money(bill.service)));
+    if(bill.packingCharge > 0) charges.push(row("📦 Packing Charge", money(bill.packingCharge)));
+    var chargesHtml = charges.join("");
+
+    var payHtml = "";
+    if(bill.splitPayments && bill.splitPayments.length){
+      payHtml += '<div style="margin-top:4px; font-weight:700;">Paid via:</div>';
+      bill.splitPayments.forEach(function(p){ payHtml += row(escapeHtml(p.mode), money(p.amount)); });
+    } else if(bill.paymentMode){
+      payHtml += row("Paid via", escapeHtml(bill.paymentMode));
+    }
+
+    var qrHtml = "";
+    var receiptQr = buildUpiQrObject(bill);
+    if(receiptQr){
+      qrHtml += '<hr>';
+      qrHtml += '<div class="r-center" style="font-weight:700; font-size:11px; margin-bottom:4px;">SCAN TO PAY (UPI)</div>';
+      qrHtml += '<div class="r-qr">' + receiptQr.createSvgTag({cellSize: 4, margin: 4}) + '</div>';
+    }
+    var tailHtml = "";
+    if(b.footer) tailHtml += '<div class="r-center">' + escapeHtml(b.footer) + '</div>';
+    if(LICENSED_TO) tailHtml += '<div class="r-center" style="font-size:10px; color:#888; margin-top:6px;">Licensed to: ' + escapeHtml(LICENSED_TO) + '</div>';
+
+    var deletedHtml = "";
+    if(bill.deletedAt){
+      deletedHtml += '<div class="r-center" style="font-weight:700; color:var(--danger); border:2px solid var(--danger); padding:3px 6px; margin-top:4px;">🗑️ THIS BILL WAS DELETED</div>';
+      deletedHtml += '<div class="r-center" style="font-size:11px;">Deleted: ' + new Date(bill.deletedAt).toLocaleString() + '</div>';
+    }
+    var parcelHtml = bill.isParcel ? '<div class="r-center" style="font-weight:700;">📦 PARCEL / TAKEAWAY</div>' : "";
+    var logoHtml = b.logo ? '<img class="r-logo" src="' + b.logo + '">' : "";
+    var when = new Date(bill.date).toLocaleString();
+    // Same labelled lines as the original bill, in every design.
+    var infoHtml = '<div>Bill No: ' + escapeHtml(bill.billNo) + '</div>' +
+      '<div>Date: ' + when + '</div>' +
+      (bill.table ? '<div>Table/Room: ' + escapeHtml(bill.table) + '</div>' : '') +
+      (bill.customer ? '<div>Customer: ' + escapeHtml(bill.customer) + '</div>' : '');
+    var BAR = "background:#000;color:#fff;-webkit-print-color-adjust:exact;print-color-adjust:exact;";
+
+    function itemsTable(withHead){
+      var t = '<table>';
+      if(withHead) t += '<thead><tr><th>Item</th><th style="text-align:center;">Qty</th><th style="text-align:right;">Amt</th></tr></thead>';
+      t += '<tbody>';
+      bill.items.forEach(function(item){
+        t += '<tr><td>' + escapeHtml(item.name) + '</td><td style="text-align:center;">' + item.qty + '</td><td style="text-align:right;">' + money(item.price*item.qty) + '</td></tr>';
+      });
+      return t + '</tbody></table>';
+    }
+
+    var html = "";
+    if(design === "blackbar"){
+      html += logoHtml;
+      html += '<div class="r-center" style="font-weight:700; font-size:15px;">' + escapeHtml(b.name) + '</div>';
+      if(b.address) html += '<div class="r-center">' + escapeHtml(b.address) + '</div>';
+      if(b.phone) html += '<div class="r-center">' + escapeHtml(b.phone) + '</div>';
+      html += '<hr>';
+      html += infoHtml;
+      html += parcelHtml + deletedHtml;
+      html += '<hr>' + itemsTable(true) + '<hr>';
+      html += chargesHtml;
+      html += '<div style="display:flex;justify-content:space-between;align-items:center;font-weight:900;font-size:22px;padding:6px 8px;margin-top:6px;' + BAR + '"><span>TOTAL</span><span>' + money(bill.total) + '</span></div>';
+      html += '<div style="margin-top:4px;">' + payHtml + '</div>';
+      html += qrHtml + '<hr>' + tailHtml;
+    } else if(design === "bands"){
+      var BAND = "background:#e5e5e5;border-top:1px solid #000;border-bottom:1px solid #000;font-weight:900;font-size:11px;padding:1px 4px;margin:6px 0 3px;letter-spacing:1px;-webkit-print-color-adjust:exact;print-color-adjust:exact;";
+      html += logoHtml;
+      html += '<div class="r-center" style="font-weight:900;font-size:15px;padding:7px 4px;' + BAR + '">' + escapeHtml(b.name) + '</div>';
+      if(b.address) html += '<div class="r-center" style="margin-top:4px;">' + escapeHtml(b.address) + '</div>';
+      if(b.phone) html += '<div class="r-center">' + escapeHtml(b.phone) + '</div>';
+      html += '<div style="margin-top:4px;">' + infoHtml + '</div>';
+      html += parcelHtml + deletedHtml;
+      html += '<div style="' + BAND + '">ITEMS</div>' + itemsTable(true);
+      html += '<div style="' + BAND + '">CHARGES</div>' + chargesHtml;
+      html += '<div style="display:flex;justify-content:space-between;align-items:center;font-weight:900;font-size:22px;padding:7px 6px;margin-top:6px;' + BAR + '"><span>TOTAL</span><span>' + money(bill.total) + '</span></div>';
+      html += '<div style="margin-top:4px;">' + payHtml + '</div>';
+      html += qrHtml + '<hr>' + tailHtml;
+    } else if(design === "premium"){
+      html += logoHtml;
+      html += '<div class="r-center" style="font-family:Georgia,\'Times New Roman\',serif;font-weight:700;font-size:18px;letter-spacing:1px;">' + escapeHtml(b.name) + '</div>';
+      if(b.address) html += '<div class="r-center" style="font-size:11px;font-style:italic;">' + escapeHtml(b.address) + '</div>';
+      if(b.phone) html += '<div class="r-center" style="font-size:11px;">' + escapeHtml(b.phone) + '</div>';
+      html += '<div class="r-center" style="margin:6px 0;">' + infoHtml + '</div>';
+      html += parcelHtml + deletedHtml;
+      html += '<div style="border-top:1px solid #000;margin:6px 0;"></div>';
+      bill.items.forEach(function(item){
+        html += row(escapeHtml(item.name) + " × " + item.qty, money(item.price*item.qty));
+      });
+      html += '<div style="border-top:1px solid #000;margin:6px 0;"></div>';
+      html += chargesHtml;
+      html += '<div class="r-center" style="margin-top:8px;border-top:2px solid #000;border-bottom:2px solid #000;padding:6px 0;">' +
+              '<div style="font-size:11px;letter-spacing:3px;font-weight:700;">TOTAL</div>' +
+              '<div style="font-family:Georgia,\'Times New Roman\',serif;font-weight:900;font-size:30px;line-height:1.1;">' + money(bill.total) + '</div></div>';
+      html += '<div style="margin-top:6px;">' + payHtml + '</div>';
+      html += qrHtml;
+      html += '<div class="r-center" style="margin-top:6px;font-style:italic;">' + (b.footer ? escapeHtml(b.footer) : "") + '</div>';
+      if(LICENSED_TO) html += '<div class="r-center" style="font-size:10px; color:#888; margin-top:6px;">Licensed to: ' + escapeHtml(LICENSED_TO) + '</div>';
+    } else {
+      // classic (original layout)
+      html += logoHtml;
+      html += '<div class="r-center" style="font-weight:700; font-size:15px;">' + escapeHtml(b.name) + '</div>';
+      if(b.address) html += '<div class="r-center">' + escapeHtml(b.address) + '</div>';
+      if(b.phone) html += '<div class="r-center">' + escapeHtml(b.phone) + '</div>';
+      html += '<hr>';
+      html += infoHtml;
+      html += parcelHtml + deletedHtml;
+      html += '<hr>' + itemsTable(true) + '<hr>';
+      html += chargesHtml;
+      html += '<hr>';
+      html += '<div style="display:flex;justify-content:space-between;align-items:center; font-weight:900; font-size:20px; color:#000; border-top:2px solid #000; padding-top:4px;">TOTAL<span>' + money(bill.total) + '</span></div>';
+      html += payHtml + qrHtml + '<hr>' + tailHtml;
+    }
+    return html;
+  }
+
   function showReceipt(bill){
     currentReceiptBill = bill;
     currentKotTicket = null;
-    var b = data.business;
-    var html = "";
-    if(b.logo){
-      html += '<img class="r-logo" src="' + b.logo + '">';
-    }
-    html += '<div class="r-center" style="font-weight:700; font-size:15px;">' + escapeHtml(b.name) + '</div>';
-    if(b.address){
-      html += '<div class="r-center">' + escapeHtml(b.address) + '</div>';
-    }
-    if(b.phone){
-      html += '<div class="r-center">' + escapeHtml(b.phone) + '</div>';
-    }
-    html += '<hr>';
-    html += '<div>Bill No: ' + escapeHtml(bill.billNo) + '</div>';
-    html += '<div>Date: ' + new Date(bill.date).toLocaleString() + '</div>';
-    if(bill.table) html += '<div>Table/Room: ' + escapeHtml(bill.table) + '</div>';
-    if(bill.customer) html += '<div>Customer: ' + escapeHtml(bill.customer) + '</div>';
-    if(bill.isParcel) html += '<div class="r-center" style="font-weight:700;">📦 PARCEL / TAKEAWAY</div>';
-    if(bill.deletedAt){
-      html += '<div class="r-center" style="font-weight:700; color:var(--danger); border:2px solid var(--danger); padding:3px 6px; margin-top:4px;">🗑️ THIS BILL WAS DELETED</div>';
-      html += '<div class="r-center" style="font-size:11px;">Deleted: ' + new Date(bill.deletedAt).toLocaleString() + '</div>';
-    }
-    html += '<hr>';
-    html += '<table><thead><tr><th>Item</th><th style="text-align:center;">Qty</th><th style="text-align:right;">Amt</th></tr></thead><tbody>';
-    bill.items.forEach(function(item){
-      html += '<tr><td>' + escapeHtml(item.name) + '</td><td style="text-align:center;">' + item.qty + '</td><td style="text-align:right;">' + (bill.currency + (item.price*item.qty).toFixed(2)) + '</td></tr>';
-    });
-    html += '</tbody></table>';
-    html += '<hr>';
-    html += '<div class="line" style="display:flex;justify-content:space-between;">Subtotal<span>' + (bill.currency + bill.subtotal.toFixed(2)) + '</span></div>';
-    if(bill.discountAmount > 0){
-      html += '<div style="display:flex;justify-content:space-between;">Discount<span>-' + (bill.currency + bill.discountAmount.toFixed(2)) + '</span></div>';
-    }
-    if(bill.taxByRate && Object.keys(bill.taxByRate).length){
-      Object.keys(bill.taxByRate).sort(function(a,b){ return parseFloat(a)-parseFloat(b); }).forEach(function(r){
-        if(bill.taxByRate[r] > 0){
-          html += '<div style="display:flex;justify-content:space-between;">' + escapeHtml(bill.taxLabel) + ' (' + r + '%)<span>' + (bill.currency + bill.taxByRate[r].toFixed(2)) + '</span></div>';
-        }
-      });
-    } else if(bill.taxPercent){
-      html += '<div style="display:flex;justify-content:space-between;">' + escapeHtml(bill.taxLabel) + ' (' + bill.taxPercent + '%)<span>' + (bill.currency + bill.tax.toFixed(2)) + '</span></div>';
-    }
-    if(bill.serviceChargePercent){
-      html += '<div style="display:flex;justify-content:space-between;">Service (' + bill.serviceChargePercent + '%)<span>' + (bill.currency + bill.service.toFixed(2)) + '</span></div>';
-    }
-    if(bill.packingCharge > 0){
-      html += '<div style="display:flex;justify-content:space-between;">📦 Packing Charge<span>' + (bill.currency + bill.packingCharge.toFixed(2)) + '</span></div>';
-    }
-    html += '<hr>';
-    html += '<div style="display:flex;justify-content:space-between;align-items:center; font-weight:900; font-size:20px; color:#000; border-top:2px solid #000; padding-top:4px;">TOTAL<span>' + (bill.currency + bill.total.toFixed(2)) + '</span></div>';
-    if(bill.splitPayments && bill.splitPayments.length){
-      html += '<div style="margin-top:4px; font-weight:700;">Paid via:</div>';
-      bill.splitPayments.forEach(function(p){
-        html += '<div style="display:flex;justify-content:space-between;">' + escapeHtml(p.mode) + '<span>' + (bill.currency + Number(p.amount).toFixed(2)) + '</span></div>';
-      });
-    } else if(bill.paymentMode){
-      html += '<div style="display:flex;justify-content:space-between;">Paid via<span>' + escapeHtml(bill.paymentMode) + '</span></div>';
-    }
-    var receiptQr = buildUpiQrObject(bill);
-    if(receiptQr){
-      html += '<hr>';
-      html += '<div class="r-center" style="font-weight:700; font-size:11px; margin-bottom:4px;">SCAN TO PAY (UPI)</div>';
-      html += '<div class="r-qr">' + receiptQr.createSvgTag({cellSize: 4, margin: 4}) + '</div>';
-    }
-    html += '<hr>';
-    if(b.footer){
-      html += '<div class="r-center">' + escapeHtml(b.footer) + '</div>';
-    }
-    if(LICENSED_TO){
-      html += '<div class="r-center" style="font-size:10px; color:#888; margin-top:6px;">Licensed to: ' + escapeHtml(LICENSED_TO) + '</div>';
-    }
+    var html = buildReceiptHtml(bill, data.business.billDesign || "classic");
 
     document.getElementById("receiptContent").innerHTML = html;
     document.getElementById("shareWhatsappPhone").value = bill.customerPhone || "";
