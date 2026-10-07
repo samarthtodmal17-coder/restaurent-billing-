@@ -4906,7 +4906,7 @@ var qrcode = function() {
      ============================================================ */
   var LICENSE_API_BASE = "https://licensing-platform.pages.dev"; // set to the real deployed licensing-platform URL
   var PRODUCT_ID = "restaurant-pos";
-  var APP_VERSION = "0.1.52";
+  var APP_VERSION = "0.1.53";
   var DB_VERSION = "1";
   var LICENSED_TO = "";
 
@@ -5248,6 +5248,16 @@ var qrcode = function() {
           };
           if(o.editing_bill_id) order.editingBillId = o.editing_bill_id;
           if(o.cancelled_session) order.cancelledSession = JSON.parse(o.cancelled_session);
+          // v0.1.53 fix: cart lines are not stored with their "key" (itemId::variantId),
+          // so after an app restart every line came back with key === undefined. That
+          // made order.kotSent[c.key] miss, so (a) cancelling a KOT'd item went through
+          // with no reason/log, (b) the next Print KOT re-sent the WHOLE order to the
+          // kitchen as if new, and (c) Merge Tables matched the wrong lines. Rebuild
+          // the same key addToCart() uses so everything lines up again.
+          order.items.forEach(function(c, i){
+            if(c.key) return;
+            c.key = c.itemId ? (c.itemId + "::" + (c.variantId || "base")) : ("line_" + i + "_" + (c.name || ""));
+          });
           return order;
         });
 
@@ -8527,9 +8537,23 @@ var qrcode = function() {
       }
     });
     targetOrder.kotSent = targetOrder.kotSent || {};
+    // v0.1.53: SUM the already-sent quantities (it used to keep only one side's number,
+    // so after merging 2+1 sent the app thought only 2 of 3 had gone to the kitchen and
+    // the next Print KOT sent a duplicate).
     Object.keys(sourceOrder.kotSent || {}).forEach(function(k){
-      targetOrder.kotSent[k] = targetOrder.kotSent[k] || sourceOrder.kotSent[k];
+      targetOrder.kotSent[k] = (targetOrder.kotSent[k] || 0) + (sourceOrder.kotSent[k] || 0);
     });
+    // Carry the source order's cancelled-after-KOT record across too, so it isn't lost.
+    if(sourceOrder.cancelledSession && sourceOrder.cancelledSession.items){
+      if(!targetOrder.cancelledSession){
+        targetOrder.cancelledSession = sourceOrder.cancelledSession;
+      } else {
+        Object.keys(sourceOrder.cancelledSession.items).forEach(function(k){
+          var s = sourceOrder.cancelledSession.items[k], t2 = targetOrder.cancelledSession.items[k];
+          if(t2) t2.qty += s.qty; else targetOrder.cancelledSession.items[k] = s;
+        });
+      }
+    }
     data.openOrders = data.openOrders.filter(function(o){ return o.id !== sourceOrder.id; });
     saveData();
   }
