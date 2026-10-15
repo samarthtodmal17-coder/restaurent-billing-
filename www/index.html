@@ -4906,7 +4906,7 @@ var qrcode = function() {
      ============================================================ */
   var LICENSE_API_BASE = "https://licensing-platform.pages.dev"; // set to the real deployed licensing-platform URL
   var PRODUCT_ID = "restaurant-pos";
-  var APP_VERSION = "0.1.54";
+  var APP_VERSION = "0.1.55";
   var DB_VERSION = "1";
   var LICENSED_TO = "";
 
@@ -5416,6 +5416,70 @@ var qrcode = function() {
     });
   }
 
+  // v0.1.55 BILL WATCHER. A bill (e.g. INV-0014) was reported vanishing
+  // from memory with no Delete and no log entry. This (1) records the last
+  // few clicks/keys so the cause can be identified, (2) appends every new
+  // bill / suspicious event to Documents\Manokshmi RestroBill Backups\
+  // bill-audit.log, and (3) puts back any bill that disappears from memory
+  // without a matching deletedBillsLog entry (self-heal).
+  var _crumbs = [];
+  function addCrumb(txt){
+    _crumbs.push(new Date().toLocaleTimeString() + " " + txt);
+    if(_crumbs.length > 12) _crumbs.shift();
+  }
+  document.addEventListener("click", function(e){
+    try{
+      var el = e.target && e.target.closest ? e.target.closest("button, a, [id]") : null;
+      if(el) addCrumb("click " + (el.id || "") + " '" + String(el.textContent || "").trim().slice(0, 30) + "'");
+    }catch(err){}
+  }, true);
+  document.addEventListener("keydown", function(e){
+    if(/^F\d+$|^Delete$|^Escape$/.test(e.key)) addCrumb("key " + e.key);
+  }, true);
+  function auditLogLine(line){
+    try{
+      if(!(window.__TAURI__ && window.__TAURI__.fs && window.__TAURI__.path)) return;
+      getBackupsFolderPath().then(function(folder){
+        return window.__TAURI__.path.join(folder, "bill-audit.log").then(function(p){
+          return window.__TAURI__.fs.writeTextFile(p, new Date().toISOString() + " " + line + "\n", {append: true});
+        });
+      }).catch(function(){});
+    }catch(e){}
+  }
+  var _auditPrevBills = null;
+  var _auditPrevSeq = null;
+  function auditBills(options){
+    try{
+      if(!data || !data.bills) return;
+      if(options && options.allowBillsWipe){ _auditPrevBills = null; return; }
+      var cur = {};
+      data.bills.forEach(function(b){ cur[b.id] = b; });
+      var seq = data.business ? data.business.dailySeq : null;
+      if(_auditPrevBills){
+        var deliberate = {};
+        (data.deletedBillsLog || []).forEach(function(d){ if(d.originalBillId) deliberate[d.originalBillId] = true; });
+        var newCount = 0;
+        Object.keys(cur).forEach(function(id){
+          if(!_auditPrevBills[id]){ newCount++; auditLogLine("NEW " + cur[id].billNo + " total=" + cur[id].total + " seqNow=" + seq); }
+        });
+        Object.keys(_auditPrevBills).forEach(function(id){
+          if(!cur[id] && !deliberate[id]){
+            var lost = _auditPrevBills[id];
+            auditLogLine("VANISHED " + lost.billNo + " total=" + lost.total + " | last actions: " + _crumbs.join(" ; "));
+            data.bills.push(lost); // self-heal: put it back
+            cur[id] = lost;
+            showToast("Bill " + lost.billNo + " was restored (it disappeared unexpectedly)");
+          }
+        });
+        if(_auditPrevSeq !== null && seq !== null && seq > _auditPrevSeq && (seq - _auditPrevSeq) !== newCount){
+          auditLogLine("SEQ JUMP " + _auditPrevSeq + " -> " + seq + " but new bills=" + newCount + " | last actions: " + _crumbs.join(" ; "));
+        }
+      }
+      _auditPrevBills = cur;
+      _auditPrevSeq = seq;
+    }catch(e){}
+  }
+
   var _saveChain = Promise.resolve();
   // `options.allowXWipe` flags (menu/bills/staff/inventory/credit/tables/
   // categories) -- see WIPE_GUARDS and ensureNoSilentWipe() below. Every
@@ -5425,6 +5489,7 @@ var qrcode = function() {
   // All Data), not something routine saves ever pass.
   function saveData(options){
     itemCodeIndexCache = null;
+    auditBills(options);
     _saveChain = _saveChain.then(function(){ return doSaveWithRetry(4, options); }).then(function(){
       debugLog("doSave() completed OK");
     }).catch(function(err){
@@ -5470,6 +5535,7 @@ var qrcode = function() {
   // user it did.
   function saveDataOrThrow(options){
     itemCodeIndexCache = null;
+    auditBills(options);
     var attempt = doSaveWithRetry(4, options).then(function(){
       debugLog("doSave() completed OK");
     }).catch(function(err){
@@ -5582,6 +5648,7 @@ var qrcode = function() {
     });
   }
 
+  var _protectedBillIds = [];
   function doSave(options){
     options = options || {};
     // IMPORTANT: no BEGIN/COMMIT/ROLLBACK here. tauri-plugin-sql's
@@ -5868,9 +5935,40 @@ var qrcode = function() {
           });
         });
       }); })
-      .then(function(){ return deleteMissingIds(db, "bills", data.bills.map(function(b){ return b.id; })); })
-      .then(function(){ return deleteOrphanChildren(db, "bill_items", "bill_id", data.bills.map(function(b){ return b.id; })); })
-      .then(function(){ return deleteOrphanChildren(db, "bill_edit_history", "bill_id", data.bills.map(function(b){ return b.id; })); })
+      // v0.1.55 BILL GUARD: a bill may only be removed from disk if the user
+      // deliberately deleted it (it then has an entry in deletedBillsLog) or
+      // this is a full restore/reset (allowBillsWipe). Any other bill that is
+      // on disk but missing from memory is KEPT and reported, so a bill can
+      // never silently vanish again, whatever the cause.
+      .then(function(){
+        var memIds = data.bills.map(function(b){ return b.id; });
+        if(options.allowBillsWipe){ _protectedBillIds = []; return; }
+        var deliberate = {};
+        (data.deletedBillsLog || []).forEach(function(d){ if(d.originalBillId) deliberate[d.originalBillId] = true; });
+        var inMem = {};
+        memIds.forEach(function(id){ inMem[id] = true; });
+        return db.select("SELECT id, bill_no, total FROM bills").then(function(rows){
+          var prot = rows.filter(function(r){ return !inMem[r.id] && !deliberate[r.id]; });
+          _protectedBillIds = prot.map(function(r){ return r.id; });
+          if(prot.length){
+            var msg = prot.map(function(r){ return r.bill_no + " (" + r.total + ")"; }).join(", ");
+            debugLog("BILL GUARD kept bills missing from memory: " + msg);
+            try{
+              var logKey = "billGuardLog";
+              var old = JSON.parse(localStorage.getItem(logKey) || "[]");
+              old.push({at: new Date().toISOString(), bills: msg});
+              localStorage.setItem(logKey, JSON.stringify(old.slice(-50)));
+            }catch(e){}
+            if(typeof showToast === "function") showToast("Protected bill(s) from vanishing: " + msg + ". Restart the app to see them again.");
+          }
+        });
+      })
+      .then(function(){
+        var keep = data.bills.map(function(b){ return b.id; }).concat(_protectedBillIds);
+        return deleteMissingIds(db, "bills", keep);
+      })
+      .then(function(){ return deleteOrphanChildren(db, "bill_items", "bill_id", data.bills.map(function(b){ return b.id; }).concat(_protectedBillIds)); })
+      .then(function(){ return deleteOrphanChildren(db, "bill_edit_history", "bill_id", data.bills.map(function(b){ return b.id; }).concat(_protectedBillIds)); })
 
       .then(function(){ return runSequential(data.deletedBillsLog, function(d){
         return db.execute("INSERT OR REPLACE INTO deleted_bills_log (id, original_bill_id, deleted_at, bill_snapshot) VALUES ($1,$2,$3,$4)",
@@ -10671,6 +10769,16 @@ var qrcode = function() {
         deleteBillBtn.textContent = "Delete";
         deleteBillBtn.style.marginLeft = "8px";
         deleteBillBtn.addEventListener("click", function(){
+          // v0.1.55: only the Owner may delete a bill (when logins are in use),
+          // and a reason is required, stored on the permanent deleted-bill record.
+          if(!isOwnerUser()){
+            showToast("Only the Owner can delete a bill. Ask the Owner.");
+            return;
+          }
+          var deleteReason = prompt("Why is bill " + b.billNo + " being deleted? (required)");
+          if(deleteReason === null) return;
+          deleteReason = deleteReason.trim();
+          if(!deleteReason){ showToast("A reason is required to delete a bill"); return; }
           if(confirm("Delete bill " + b.billNo + "? This cannot be undone.")){
             // Keep a full permanent copy of the bill (items, totals,
             // everything) even though the live bill record is being
@@ -10681,7 +10789,8 @@ var qrcode = function() {
               id: uid("del"),
               originalBillId: b.id,
               deletedAt: new Date().toISOString(),
-              deletedBy: currentUser ? currentUser.name : ""
+              deletedBy: currentUser ? currentUser.name : "",
+              deleteReason: deleteReason
             });
             data.deletedBillsLog.push(deletedEntry);
 
