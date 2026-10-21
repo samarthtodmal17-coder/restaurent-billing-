@@ -2512,7 +2512,7 @@
       <input type="file" id="importFile" accept=".json" style="display:none;">
 
       <div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--border);">
-        <p class="muted" style="margin:0 0 6px 0;">Automatic backups: a dated copy is saved to your Documents folder on its own, with nothing to click -- refreshed with the full day's data when you close the app, and made fresh on opening if that day's backup is still missing (e.g. after a crash). A safety net alongside the manual export above. Kept for the last 7 days.</p>
+        <p class="muted" style="margin:0 0 6px 0;">Automatic backups: a dated copy is saved to your Documents folder on its own, with nothing to click -- refreshed with the full day's data when you close the app, and made fresh on opening if that day's backup is still missing (e.g. after a crash). A safety net alongside the manual export above. Kept for the last 30 days. The app also saves a record of every bill the moment it is made, an hourly copy of all data, and a safety copy before any update, import or erase.</p>
         <p class="muted" id="autoBackupStatusText" style="margin:0 0 8px 0;"></p>
         <div class="row">
           <select id="autoBackupList" style="flex:1;"></select>
@@ -2521,6 +2521,15 @@
       </div>
 
       <button class="btn danger" id="btnResetData" style="margin-top:14px;">Erase All Data</button>
+    </div>
+
+    <div class="card settings-full" id="cardRecovery">
+      <h2>🛟 Recover Missing Bills</h2>
+      <p class="muted">Searches the saved backups, the hourly copies, the bill record files and the bill log for any bill that is no longer in Bill History, and lets you put it back. Only the Owner can use this. A bill recovered from the log alone comes back with its number and amount only, without the item list.</p>
+      <button class="btn secondary" id="btnScanRecovery" type="button">Scan for missing bills</button>
+      <p class="muted" id="recoveryStatus" style="margin:8px 0 0 0;"></p>
+      <div id="recoveryList" style="margin-top:8px;"></div>
+      <button class="btn" id="btnRestoreRecovered" type="button" style="display:none;margin-top:10px;">Restore selected bills</button>
     </div>
 
     <div class="card settings-full" id="cardStaffAccounts">
@@ -4906,7 +4915,7 @@ var qrcode = function() {
      ============================================================ */
   var LICENSE_API_BASE = "https://licensing-platform.pages.dev"; // set to the real deployed licensing-platform URL
   var PRODUCT_ID = "restaurant-pos";
-  var APP_VERSION = "0.1.56";
+  var APP_VERSION = "0.1.57";
   var DB_VERSION = "1";
   var LICENSED_TO = "";
 
@@ -5323,6 +5332,20 @@ var qrcode = function() {
 
         var clearedOrdersLog = clearedOrderRows.map(function(r){ return JSON.parse(r.entry_json); });
 
+        // v0.1.56: remember exactly which rows this copy of the app has loaded.
+        // A routine save may only delete rows it has seen (see deleteMissingIds).
+        _seenIds = {};
+        resetSeen("categories", categoryRows.map(function(r){ return r.id; }));
+        resetSeen("subcategories", subcategoryRows.map(function(r){ return r.id; }));
+        resetSeen("tables", tableRows.map(function(r){ return r.id; }));
+        resetSeen("staff_accounts", staffAccountRows.map(function(r){ return r.id; }));
+        resetSeen("inventory_items", invItemRows.map(function(r){ return r.id; }));
+        resetSeen("menu_items", menuItemRows.map(function(r){ return r.id; }));
+        resetSeen("menu_item_variants", variantRows.map(function(r){ return r.id; }));
+        resetSeen("menu_item_recipes", recipeRows.map(function(r){ return r.id; }));
+        resetSeen("open_orders", orderRows.map(function(r){ return r.id; }));
+        resetSeen("credit_payments", creditRows.map(function(r){ return r.id; }));
+
         return mergeWithDefaults({
           business: business, categories: categories, subcategories: subcategories,
           menuItems: menuItems, tables: tables, openOrders: openOrders, bills: bills,
@@ -5447,35 +5470,75 @@ var qrcode = function() {
     }catch(e){}
   }
   var _auditPrevBills = null;
+  var _auditPrevSig = {};
+  var _auditPrevCredit = {};
+  var _auditPrevCleared = {};
   var _auditPrevSeq = null;
+  var _dirtySinceSnap = false;
+  // A cheap fingerprint of a bill, to notice that it changed (edited) since the last save.
+  function billSig(b){
+    return [b.billNo, b.total, b.editedAt || "", (b.items || []).length, b.paymentMode || "", b.creditPaid || 0].join("|");
+  }
+  // Remember what the bills look like right now, so the next save can tell
+  // exactly what is new, edited, deleted on purpose, or missing.
+  function auditBaseline(){
+    _auditPrevBills = {}; _auditPrevSig = {}; _auditPrevCredit = {}; _auditPrevCleared = {};
+    ((data && data.bills) || []).forEach(function(b){ _auditPrevBills[b.id] = b; _auditPrevSig[b.id] = billSig(b); });
+    ((data && data.creditPayments) || []).forEach(function(c){ _auditPrevCredit[c.id] = true; });
+    ((data && data.clearedOrdersLog) || []).forEach(function(c){ _auditPrevCleared[c.id] = true; });
+    _auditPrevSeq = (data && data.business) ? data.business.dailySeq : null;
+  }
   function auditBills(options){
     try{
       if(!data || !data.bills) return;
-      if(options && options.allowBillsWipe){ _auditPrevBills = null; return; }
+      _dirtySinceSnap = true;
+      if(options && options.allowBillsWipe){
+        // Deliberate whole-data replacement (Import / Restore / Erase): note it, then start fresh.
+        journalAppend({ev: "data_replaced", bills: data.bills.length});
+        auditBaseline();
+        return;
+      }
+      if(!_auditPrevBills){ auditBaseline(); return; }
       var cur = {};
       data.bills.forEach(function(b){ cur[b.id] = b; });
       var seq = data.business ? data.business.dailySeq : null;
-      if(_auditPrevBills){
-        var deliberate = {};
-        (data.deletedBillsLog || []).forEach(function(d){ if(d.originalBillId) deliberate[d.originalBillId] = true; });
-        var newCount = 0;
-        Object.keys(cur).forEach(function(id){
-          if(!_auditPrevBills[id]){ newCount++; auditLogLine("NEW " + cur[id].billNo + " total=" + cur[id].total + " seqNow=" + seq); }
-        });
-        Object.keys(_auditPrevBills).forEach(function(id){
-          if(!cur[id] && !deliberate[id]){
-            var lost = _auditPrevBills[id];
-            auditLogLine("VANISHED " + lost.billNo + " total=" + lost.total + " | last actions: " + _crumbs.join(" ; "));
-            data.bills.push(lost); // self-heal: put it back
-            cur[id] = lost;
-            showToast("Bill " + lost.billNo + " was restored (it disappeared unexpectedly)");
-          }
-        });
-        if(_auditPrevSeq !== null && seq !== null && seq > _auditPrevSeq && (seq - _auditPrevSeq) !== newCount){
-          auditLogLine("SEQ JUMP " + _auditPrevSeq + " -> " + seq + " but new bills=" + newCount + " | last actions: " + _crumbs.join(" ; "));
+      var deliberate = {};
+      (data.deletedBillsLog || []).forEach(function(d){ if(d.originalBillId) deliberate[d.originalBillId] = d; });
+      var newCount = 0;
+      Object.keys(cur).forEach(function(id){
+        if(!_auditPrevBills[id]){
+          newCount++;
+          auditLogLine("NEW " + cur[id].billNo + " total=" + cur[id].total + " seqNow=" + seq);
+          journalAppend({ev: "bill_new", bill: cur[id]});
+        } else if(_auditPrevSig[id] !== billSig(cur[id])){
+          journalAppend({ev: "bill_edit", bill: cur[id]});
         }
+      });
+      Object.keys(_auditPrevBills).forEach(function(id){
+        if(cur[id]) return;
+        var lost = _auditPrevBills[id];
+        if(deliberate[id]){
+          journalAppend({ev: "bill_delete", bill: lost, by: deliberate[id].deletedBy || "", reason: deliberate[id].deleteReason || ""});
+        } else {
+          auditLogLine("VANISHED " + lost.billNo + " total=" + lost.total + " | last actions: " + _crumbs.join(" ; "));
+          journalAppend({ev: "bill_vanished_restored", bill: lost});
+          data.bills.push(lost); // self-heal: put it back
+          cur[id] = lost;
+          showToast("Bill " + lost.billNo + " was restored (it disappeared unexpectedly)");
+        }
+      });
+      (data.creditPayments || []).forEach(function(c){
+        if(!_auditPrevCredit[c.id]){ _auditPrevCredit[c.id] = true; journalAppend({ev: "credit_payment", rec: c}); }
+      });
+      (data.clearedOrdersLog || []).forEach(function(c){
+        if(!_auditPrevCleared[c.id]){ _auditPrevCleared[c.id] = true; journalAppend({ev: "order_cleared", rec: c}); }
+      });
+      if(_auditPrevSeq !== null && seq !== null && seq > _auditPrevSeq && (seq - _auditPrevSeq) !== newCount){
+        auditLogLine("SEQ JUMP " + _auditPrevSeq + " -> " + seq + " but new bills=" + newCount + " | last actions: " + _crumbs.join(" ; "));
       }
       _auditPrevBills = cur;
+      _auditPrevSig = {};
+      Object.keys(cur).forEach(function(id){ _auditPrevSig[id] = billSig(cur[id]); });
       _auditPrevSeq = seq;
     }catch(e){}
   }
@@ -5559,18 +5622,79 @@ var qrcode = function() {
   // that are genuinely no longer present in memory. Called only AFTER
   // every current row has already been upserted (see doSave() below), so
   // this never removes a row before its replacement is safely on disk.
-  function deleteMissingIds(db, table, currentIds){
+  //
+  // v0.1.56 NEVER-DELETE RULES. The old version deleted every row on disk
+  // that was missing from memory. If memory was ever wrong or stale (for
+  // example a second copy of the app that had its own memory), the next
+  // save silently destroyed real data -- the cause of the missing bills.
+  // Now a routine save may only delete a row that THIS copy of the app has
+  // already seen (loaded from disk or saved earlier) and that has since been
+  // removed from memory. A row on disk that this copy never saw is KEPT.
+  // The audit logs (deleted bills, cleared orders) are append-only: a
+  // routine save never deletes them. Only the explicit whole-data actions
+  // (Import / Restore / Reset, which pass the allow...Wipe flags) may
+  // replace everything, as before.
+  var _seenIds = {};
+  var _curSaveOptions = {};
+  var SEEN_RULE_TABLES = {
+    categories: "allowCategoriesWipe", subcategories: "allowCategoriesWipe", tables: "allowTablesWipe",
+    staff_accounts: "allowStaffWipe", inventory_items: "allowInventoryWipe",
+    menu_items: "allowMenuWipe", menu_item_variants: "allowMenuWipe", menu_item_recipes: "allowMenuWipe",
+    open_orders: null, credit_payments: "allowCreditWipe"
+  };
+  var APPEND_ONLY_TABLES = { deleted_bills_log: "allowBillsWipe", cleared_orders_log: "allowBillsWipe" };
+  var CHILD_PARENT = {
+    order_items: "open_orders", bill_items: "bills",
+    bill_edit_history: "bills", credit_payment_allocations: "credit_payments"
+  };
+  function markSeen(table, ids){
+    var s = (_seenIds[table] = _seenIds[table] || {});
+    (ids || []).forEach(function(id){ if(id !== null && id !== undefined) s[id] = true; });
+  }
+  function resetSeen(table, ids){ _seenIds[table] = {}; markSeen(table, ids); }
+  function legacyDeleteMissing(db, table, currentIds){
     if(!currentIds.length) return db.execute("DELETE FROM " + table);
     return db.execute("DELETE FROM " + table + " WHERE id NOT IN (" + idPlaceholders(currentIds.length) + ")", currentIds);
   }
-  // Same idea as deleteMissingIds, but for child/line-item tables that
-  // don't have a stable id from the JS side (order_items, bill_items,
-  // credit_payment_allocations use AUTOINCREMENT ids) -- so instead of
-  // matching by id, this removes every child row whose parent foreign key
-  // is no longer in keepParentIds.
-  function deleteOrphanChildren(db, table, fkColumn, keepParentIds){
-    if(!keepParentIds.length) return db.execute("DELETE FROM " + table);
-    return db.execute("DELETE FROM " + table + " WHERE " + fkColumn + " NOT IN (" + idPlaceholders(keepParentIds.length) + ")", keepParentIds);
+  function deleteIdsChunked(db, table, ids){
+    var chunks = [];
+    for(var i = 0; i < ids.length; i += 500) chunks.push(ids.slice(i, i + 500));
+    return runSequential(chunks, function(ch){
+      return db.execute("DELETE FROM " + table + " WHERE id IN (" + idPlaceholders(ch.length) + ")", ch);
+    });
+  }
+  function deleteMissingIds(db, table, currentIds){
+    var has = Object.prototype.hasOwnProperty;
+    if(has.call(APPEND_ONLY_TABLES, table)){
+      if(_curSaveOptions[APPEND_ONLY_TABLES[table]]) return legacyDeleteMissing(db, table, currentIds);
+      return Promise.resolve();
+    }
+    if(!has.call(SEEN_RULE_TABLES, table)) return legacyDeleteMissing(db, table, currentIds);
+    var flag = SEEN_RULE_TABLES[table];
+    if(flag && _curSaveOptions[flag]){
+      return legacyDeleteMissing(db, table, currentIds).then(function(){ resetSeen(table, currentIds); });
+    }
+    var cur = {};
+    currentIds.forEach(function(id){ cur[id] = true; });
+    return db.select("SELECT id FROM " + table).then(function(rows){
+      var seen = _seenIds[table] || {};
+      var gone = [];
+      rows.forEach(function(r){ if(!cur[r.id] && seen[r.id]) gone.push(r.id); });
+      return deleteIdsChunked(db, table, gone).then(function(){
+        gone.forEach(function(id){ delete seen[id]; });
+        markSeen(table, currentIds);
+      });
+    });
+  }
+  // Same idea, for child/line-item tables that don't have a stable id from
+  // the JS side (order_items, bill_items, credit_payment_allocations use
+  // AUTOINCREMENT ids). v0.1.56: only rows whose parent no longer exists
+  // at all are removed (true orphans). A child whose parent is still on
+  // disk is never touched here, even if memory doesn't know that parent.
+  function deleteOrphanChildren(db, table, fkColumn){
+    var parent = CHILD_PARENT[table];
+    if(!parent) return Promise.resolve();
+    return db.execute("DELETE FROM " + table + " WHERE " + fkColumn + " NOT IN (SELECT id FROM " + parent + ")");
   }
   // v0.1.40 fix: an audit found that order_items/bill_items/bill_edit_history/
   // credit_payment_allocations were still doing DELETE-then-INSERT for one
@@ -5651,6 +5775,7 @@ var qrcode = function() {
   var _protectedBillIds = [];
   function doSave(options){
     options = options || {};
+    _curSaveOptions = options;
     // IMPORTANT: no BEGIN/COMMIT/ROLLBACK here. tauri-plugin-sql's
     // db.execute() acquires a connection from an internal sqlx pool
     // FRESH on every single call (confirmed by reading the plugin's own
@@ -6761,6 +6886,8 @@ var qrcode = function() {
     // restore's own promise is published back into _saveChain so nothing
     // else can jump the queue while it's in progress.
     var restorePromise = _saveChain.then(function(){
+      return safetySnapshot("restore"); // v0.1.56: full copy of the CURRENT data before it is replaced
+    }).then(function(){
       data = mergeWithDefaults(imported); // fills in any fields missing from an older/partial backup (e.g. subcategories)
       activeOrderId = null;
       ensureItemCodes();
@@ -6827,6 +6954,8 @@ var qrcode = function() {
       // read/waited on it) -- see the matching note in
       // restoreFromBackupObject() above for why that matters.
       _saveChain = _saveChain.then(function(){
+        return safetySnapshot("erase-all"); // v0.1.56: full copy of the current data before it is erased
+      }).then(function(){
         data = JSON.parse(JSON.stringify(defaultData));
         activeOrderId = null;
         renderHeader();
@@ -8117,18 +8246,21 @@ var qrcode = function() {
         )){
           return;
         }
-        data.categories = imported.categories || [];
-        data.subcategories = imported.subcategories || [];
-        data.menuItems = imported.menuItems || [];
-        ensureItemCodes();
-        // Explicit, confirmed replace-the-whole-menu action (same as
-        // Erase All below) -- a deliberately empty import file is a
-        // legitimate, if unusual, choice here, not the accidental-empty
-        // case the save guard exists to catch.
-        saveData({allowMenuWipe: true});
-        renderMenuScreen();
-        renderBillingScreen();
-        showToast("Menu imported");
+        // v0.1.56: a full safety copy first, then the replace.
+        safetySnapshot("menu-import").then(function(){
+          data.categories = imported.categories || [];
+          data.subcategories = imported.subcategories || [];
+          data.menuItems = imported.menuItems || [];
+          ensureItemCodes();
+          // Explicit, confirmed replace-the-whole-menu action (same as
+          // Erase All below) -- a deliberately empty import file is a
+          // legitimate, if unusual, choice here, not the accidental-empty
+          // case the save guard exists to catch.
+          saveData({allowMenuWipe: true});
+          renderMenuScreen();
+          renderBillingScreen();
+          showToast("Menu imported");
+        });
       }catch(err){
         showToast("Invalid menu file");
       }
@@ -8146,13 +8278,16 @@ var qrcode = function() {
     )){
       return;
     }
-    data.categories = [];
-    data.subcategories = [];
-    data.menuItems = [];
-    saveData({allowMenuWipe: true});
-    renderMenuScreen();
-    renderBillingScreen();
-    showToast("Menu erased");
+    // v0.1.56: a full safety copy first, then the erase.
+    safetySnapshot("menu-erase").then(function(){
+      data.categories = [];
+      data.subcategories = [];
+      data.menuItems = [];
+      saveData({allowMenuWipe: true});
+      renderMenuScreen();
+      renderBillingScreen();
+      showToast("Menu erased");
+    });
   });
 
   document.getElementById("newItemPhotoUpload").addEventListener("change", function(e){
@@ -10552,6 +10687,13 @@ var qrcode = function() {
       data.business.dailySeq = 1;
       data.business.lastBillDateKey = todayKey;
     }
+    // v0.1.56: never issue a number that today's bills already use, even if
+    // the stored counter is stale (this is what produced duplicate numbers).
+    var usedNumbersToday = {};
+    data.bills.forEach(function(x){
+      if(dateKey(x.date) === todayKey){ var nn = billNumberOf(x.billNo); if(nn) usedNumbersToday[nn] = true; }
+    });
+    while(usedNumbersToday[data.business.dailySeq]) data.business.dailySeq += 1;
     var billNo = data.business.billPrefix + "-" + String(data.business.dailySeq).padStart(4, "0");
     var bill = {
       id: uid("bill"),
@@ -10597,6 +10739,7 @@ var qrcode = function() {
     showReceipt(bill);
     discardOrder(finishedOrderId);
     showToast("Bill saved: " + billNo);
+    setTimeout(checkBillGapsToday, 2500);
     // One click does it all: saving the bill immediately opens the print
     // dialog too, instead of making you click "Print Now" separately.
     printReceiptNow("receipt");
@@ -10609,6 +10752,55 @@ var qrcode = function() {
     // midnight in a positive-UTC-offset timezone doesn't get grouped under
     // the previous day. Same fix as localDateKey() below, applied here too.
     return localDateKey(new Date(isoDate));
+  }
+
+  // v0.1.56 BILL NUMBER SAFEGUARDS ------------------------------------
+  // "INV-0023" -> 23 (null if the text has no trailing number)
+  function billNumberOf(billNo){
+    var m = /(\d+)\s*$/.exec(String(billNo || ""));
+    return m ? parseInt(m[1], 10) : null;
+  }
+  // Bill numbers 1..max for one day that have no bill and no deliberate
+  // deletion record. Each one is a bill that should exist and does not.
+  function missingBillNumbersForDay(dayKey){
+    var present = {}, max = 0;
+    function take(b){
+      if(dateKey(b.date) !== dayKey) return;
+      var n = billNumberOf(b.billNo);
+      if(n){ present[n] = true; if(n > max) max = n; }
+    }
+    (data.bills || []).forEach(take);
+    (data.deletedBillsLog || []).forEach(take);
+    var missing = [];
+    for(var i = 1; i <= max; i++) if(!present[i]) missing.push(i);
+    return missing;
+  }
+  function missingNumbersText(nums){
+    return nums.map(function(n){ return String(n).padStart(4, "0"); }).join(", ");
+  }
+  // Same check over a date range -> [{day, nums}]
+  function missingBillNumbersInRange(fromKey, toKey){
+    var days = {};
+    (data.bills || []).forEach(function(b){
+      var k = dateKey(b.date);
+      if((!fromKey || k >= fromKey) && (!toKey || k <= toKey)) days[k] = true;
+    });
+    return Object.keys(days).sort().map(function(k){ return {day: k, nums: missingBillNumbersForDay(k)}; })
+      .filter(function(x){ return x.nums.length > 0; });
+  }
+  var _lastGapAlert = "";
+  // Shown right after a bill is saved and when the app starts: a gap in
+  // today's numbers is raised immediately, not found days later in a report.
+  function checkBillGapsToday(){
+    try{
+      var nums = missingBillNumbersForDay(localDateKey(new Date()));
+      var text = missingNumbersText(nums);
+      if(nums.length && text !== _lastGapAlert){
+        _lastGapAlert = text;
+        auditLogLine("GAP today missing numbers: " + text);
+        showToast("Warning: bill number(s) missing today: " + text + ". Open History to check.");
+      }
+    }catch(e){}
   }
 
   // Counts how many bills in a list have been edited at least once --
@@ -10845,6 +11037,10 @@ var qrcode = function() {
       }
       if(dayRiskyClearedCount > 0){
         dayTotalHtml += '<div class="line" style="color:var(--danger);"><span>🔒 Orders Cleared After KOT</span><span>' + dayRiskyClearedCount + '</span></div>';
+      }
+      var dayMissingNums = missingBillNumbersForDay(g.key);
+      if(dayMissingNums.length > 0){
+        dayTotalHtml += '<div class="line" style="color:var(--danger);font-weight:700;"><span>⚠ Missing bill numbers</span><span>' + escapeHtml(missingNumbersText(dayMissingNums)) + '</span></div>';
       }
       Object.keys(g.paymentTotals || {}).sort().forEach(function(mode){
         dayTotalHtml += '<div class="line"><span>' + escapeHtml(mode) + '</span><span>' + fmt(g.paymentTotals[mode]) + '</span></div>';
@@ -12139,6 +12335,12 @@ var qrcode = function() {
     html += '<hr>';
     var billWord = billsForReport.length === 1 ? "bill" : "bills";
     html += '<div style="display:flex;justify-content:space-between;">Total Bills<span>' + billsForReport.length + ' ' + billWord + '</span></div>';
+    // v0.1.56: gaps in the numbering are printed on the report itself.
+    var reportGaps = missingBillNumbersInRange(fromKey, toKey);
+    reportGaps.forEach(function(gp){
+      html += '<div style="font-weight:700;">WARNING: missing bill no. ' + escapeHtml(missingNumbersText(gp.nums)) +
+        (reportGaps.length > 1 ? ' (' + escapeHtml(gp.day) + ')' : '') + '</div>';
+    });
     if(editedCount > 0){
       html += '<div style="display:flex;justify-content:space-between;">✏️ Bills Edited<span>' + editedCount + '</span></div>';
     }
@@ -13041,6 +13243,8 @@ var qrcode = function() {
     // the status text would flash "Could not check automatic backups" for
     // a moment even though nothing was actually wrong.
     maybeRunAutomaticBackup();
+    startSafetyServices();            // v0.1.56: update snapshot, hourly snapshots, bill journal
+    setTimeout(checkBillGapsToday, 4000);
     applyRolePermissions();
     // Bill History defaults to Today (not All Dates) -- checking on
     // today's bills is the most common reason to open this screen, so it
@@ -13282,7 +13486,7 @@ var qrcode = function() {
      only visible trace in normal operation is the status line and
      restore dropdown on the Settings screen. */
   var AUTO_BACKUP_FOLDER_NAME = "Manokshmi RestroBill Backups";
-  var AUTO_BACKUP_RETENTION_COUNT = 7;
+  var AUTO_BACKUP_RETENTION_COUNT = 30;
 
   function getBackupsFolderPath(){
     return window.__TAURI__.path.documentDir().then(function(docDir){
@@ -13342,6 +13546,308 @@ var qrcode = function() {
     _backupChain = p.catch(function(){}); // one failed backup must never block the next one
     return p;
   }
+
+  /* ================= v0.1.56 SAFETY NET: journal, snapshots, safety copies =================
+     Extra files in Documents\Manokshmi RestroBill Backups, each independent of the database:
+       journal\journal-YYYY-MM-DD.jsonl  one line per bill event (new / edited / deleted / restored),
+                                         with the whole bill, written the moment it happens
+       snapshots\snap-YYYY-MM-DD-HHMM.json  full copy of all data, hourly while the app is open and
+                                         data changed (last 12 kept)
+       safety\before-....json            full copy taken before an update, an Import, a Restore or
+                                         Erase All (last 10 kept)
+     Nothing here can block billing: writes are queued, and a failure is only logged. */
+  var SAFETY_JOURNAL_DIR = "journal", SNAP_DIR = "snapshots", SAFETY_DIR = "safety";
+  var _journalChain = Promise.resolve();
+  var _journalFailures = 0;
+  function pad2(n){ return String(n).padStart(2, "0"); }
+  function localStamp(d){ d = d || new Date(); return d.getFullYear() + "-" + pad2(d.getMonth() + 1) + "-" + pad2(d.getDate()); }
+  function localStampTime(d){ d = d || new Date(); return localStamp(d) + "-" + pad2(d.getHours()) + pad2(d.getMinutes()); }
+  function safetyFolder(sub){
+    return getBackupsFolderPath().then(function(root){
+      return window.__TAURI__.path.join(root, sub).then(function(p){
+        return window.__TAURI__.fs.mkdir(p, {recursive: true}).then(function(){ return p; });
+      });
+    });
+  }
+  function journalAppend(obj){
+    try{
+      if(!(window.__TAURI__ && window.__TAURI__.fs && window.__TAURI__.path)) return;
+      var line = JSON.stringify(Object.assign({t: new Date().toISOString(), v: APP_VERSION}, obj)) + "\n";
+      _journalChain = _journalChain.catch(function(){}).then(function(){
+        return safetyFolder(SAFETY_JOURNAL_DIR).then(function(dir){
+          return window.__TAURI__.path.join(dir, "journal-" + localStamp() + ".jsonl");
+        }).then(function(file){
+          return window.__TAURI__.fs.writeTextFile(file, line, {append: true});
+        });
+      }).catch(function(e){ _journalFailures++; debugLog("journal write failed: " + (e && e.message)); });
+    }catch(e){}
+  }
+  function pruneFolderFiles(dir, nameRegex, keep){
+    return window.__TAURI__.fs.readDir(dir).then(function(entries){
+      var names = entries.map(function(e){ return e.name; }).filter(function(n){ return n && nameRegex.test(n); }).sort();
+      var drop = names.slice(0, Math.max(0, names.length - keep));
+      return runSequential(drop, function(n){
+        return window.__TAURI__.path.join(dir, n).then(function(p){
+          return window.__TAURI__.fs.remove(p).catch(function(){});
+        });
+      });
+    });
+  }
+  // Writes a full copy of all data (same format as the manual export) into a subfolder.
+  function writeFullCopy(sub, fileName, nameRegex, keep){
+    return enqueueBackup(function(){
+      return buildBackupExportObject().then(function(obj){
+        return safetyFolder(sub).then(function(dir){
+          return window.__TAURI__.path.join(dir, fileName).then(function(file){
+            return window.__TAURI__.fs.writeTextFile(file, JSON.stringify(obj)).then(function(){ return dir; });
+          });
+        });
+      }).then(function(dir){ return pruneFolderFiles(dir, nameRegex, keep); });
+    });
+  }
+  // Safety copy before anything that replaces data. Never rejects: if the copy
+  // cannot be written the action still goes ahead, but the failure is logged.
+  function safetySnapshot(label){
+    if(!(window.__TAURI__ && window.__TAURI__.fs)) return Promise.resolve();
+    var safe = String(label).replace(/[^A-Za-z0-9._-]/g, "_");
+    return writeFullCopy(SAFETY_DIR, "before-" + safe + "-" + localStampTime() + ".json", /^before-.*\.json$/, 10)
+      .then(function(){ persistDebugLog("safety copy written: " + safe); })
+      .catch(function(e){ persistDebugLog("safety copy FAILED (" + safe + "): " + (e && e.message)); });
+  }
+  var _safetyStarted = false;
+  function startSafetyServices(){
+    if(_safetyStarted) return;
+    _safetyStarted = true;
+    if(!(window.__TAURI__ && window.__TAURI__.fs)) return;
+    auditBaseline();
+    try{
+      var last = localStorage.getItem("restrobill_last_version");
+      if(last !== APP_VERSION){
+        safetySnapshot("update-" + (last || "first-run") + "-to-" + APP_VERSION).then(function(){
+          try{ localStorage.setItem("restrobill_last_version", APP_VERSION); }catch(e){}
+        });
+      }
+    }catch(e){}
+    setInterval(function(){
+      if(!_dirtySinceSnap) return;
+      _dirtySinceSnap = false;
+      writeFullCopy(SNAP_DIR, "snap-" + localStampTime() + ".json", /^snap-.*\.json$/, 12).catch(function(e){
+        _dirtySinceSnap = true;
+        debugLog("hourly snapshot failed: " + (e && e.message));
+      });
+    }, 60 * 60 * 1000);
+    journalAppend({ev: "app_start", bills: (data.bills || []).length});
+  }
+
+  /* ================= v0.1.56 RECOVER MISSING BILLS =================
+     Looks for bills that are no longer in Bill History in: the daily backups, the hourly
+     copies, the safety copies, the bill journal, and (as a last resort, number + amount
+     only) the bill-audit.log. The owner picks which to put back. */
+  var _recoveryItems = [];
+  function listFilesIn(sub, regex){
+    return getBackupsFolderPath().then(function(root){
+      return sub ? window.__TAURI__.path.join(root, sub) : root;
+    }).then(function(dir){
+      return window.__TAURI__.fs.readDir(dir).then(function(entries){
+        return entries.map(function(e){ return e.name; }).filter(function(n){ return n && regex.test(n); })
+          .sort().map(function(n){ return {dir: dir, name: n}; });
+      }).catch(function(){ return []; });
+    });
+  }
+  function readFileText(f){
+    return window.__TAURI__.path.join(f.dir, f.name).then(function(p){ return window.__TAURI__.fs.readTextFile(p); });
+  }
+  // Pure logic (no files): given what was found, decide what is missing.
+  //   found.full  = [{bill, src, ts}]   whole bills from backups / journal
+  //   found.deleted = {id:true}         ids that were deleted on purpose
+  //   found.logNew = [{iso, billNo, total}]  lines from bill-audit.log
+  function computeRecoveryList(currentBills, deletedLog, found){
+    var curIds = {}, curByDayNo = {}, delKeys = {};
+    var deliberate = Object.assign({}, found.deleted || {});
+    (currentBills || []).forEach(function(b){
+      curIds[b.id] = true;
+      var k = dateKey(b.date) + "|" + b.billNo;
+      (curByDayNo[k] = curByDayNo[k] || []).push(b);
+    });
+    (deletedLog || []).forEach(function(d){
+      if(d.originalBillId) deliberate[d.originalBillId] = true;
+      delKeys[dateKey(d.date) + "|" + d.billNo] = true;
+    });
+    var best = {};
+    (found.full || []).forEach(function(f){
+      if(!f.bill || !f.bill.id) return;
+      if(!best[f.bill.id] || f.ts >= best[f.bill.id].ts) best[f.bill.id] = f;
+    });
+    var out = [];
+    Object.keys(best).forEach(function(id){
+      if(curIds[id] || deliberate[id]) return;
+      var b = best[id].bill;
+      var k = dateKey(b.date) + "|" + b.billNo;
+      var dup = (curByDayNo[k] || []).some(function(x){ return Number(x.total) === Number(b.total); });
+      if(dup) return;
+      out.push({kind: "full", bill: b, src: best[id].src});
+    });
+    var seenPlace = {};
+    (found.logNew || []).forEach(function(e){
+      var day = dateKey(e.iso), key = day + "|" + e.billNo, pk = key + "|" + e.total;
+      if(seenPlace[pk] || delKeys[key]) return;
+      var present = (curByDayNo[key] || []).some(function(b){
+        return Number(b.total) === Number(e.total) || (b.editHistory && b.editHistory.length);
+      });
+      var haveFull = out.some(function(o){
+        return o.kind === "full" && dateKey(o.bill.date) === day && o.bill.billNo === e.billNo && Number(o.bill.total) === Number(e.total);
+      });
+      var deletedSame = (deletedLog || []).some(function(d){
+        return dateKey(d.date) === day && d.billNo === e.billNo && Number(d.total) === Number(e.total);
+      });
+      if(present || haveFull || deletedSame) return;
+      seenPlace[pk] = true;
+      out.push({kind: "placeholder", iso: e.iso, billNo: e.billNo, total: Number(e.total), src: "bill log (item details not available)"});
+    });
+    out.sort(function(a, b){
+      var da = a.kind === "full" ? a.bill.date : a.iso, db = b.kind === "full" ? b.bill.date : b.iso;
+      return new Date(da) - new Date(db);
+    });
+    return out;
+  }
+  function parseAuditLogNew(text){
+    var res = [];
+    String(text || "").split(/\r?\n/).forEach(function(line){
+      var m = /^(\S+)\s+NEW\s+(\S+)\s+total=([0-9.]+)/.exec(line);
+      if(m) res.push({iso: m[1], billNo: m[2], total: parseFloat(m[3])});
+    });
+    return res;
+  }
+  function scanForMissingBills(){
+    var found = {full: [], deleted: {}, logNew: []};
+    function takeBackupText(text, src){
+      var obj; try{ obj = JSON.parse(text); }catch(e){ return; }
+      var bills = obj && (obj.bills || (obj.data && obj.data.bills)) || [];
+      bills.forEach(function(b){ found.full.push({bill: b, src: src, ts: 1}); });
+    }
+    return listFilesIn("", /^backup-\d{4}-\d{2}-\d{2}\.json$/).then(function(files){
+      return runSequential(files, function(f){
+        return readFileText(f).then(function(t){ takeBackupText(t, "daily backup " + f.name.replace("backup-", "").replace(".json", "")); }).catch(function(){});
+      });
+    }).then(function(){
+      return listFilesIn(SNAP_DIR, /^snap-.*\.json$/);
+    }).then(function(files){
+      return runSequential(files, function(f){
+        return readFileText(f).then(function(t){ takeBackupText(t, "hourly copy " + f.name.replace("snap-", "").replace(".json", "")); }).catch(function(){});
+      });
+    }).then(function(){
+      return listFilesIn(SAFETY_DIR, /^before-.*\.json$/);
+    }).then(function(files){
+      return runSequential(files, function(f){
+        return readFileText(f).then(function(t){ takeBackupText(t, "safety copy " + f.name.replace(".json", "")); }).catch(function(){});
+      });
+    }).then(function(){
+      return listFilesIn(SAFETY_JOURNAL_DIR, /^journal-.*\.jsonl$/);
+    }).then(function(files){
+      return runSequential(files, function(f){
+        return readFileText(f).then(function(t){
+          t.split(/\r?\n/).forEach(function(line){
+            if(!line) return;
+            var ev; try{ ev = JSON.parse(line); }catch(e){ return; }
+            var ts = Date.parse(ev.t) || 2;
+            if(ev.ev === "bill_delete" && ev.bill && ev.bill.id){ found.deleted[ev.bill.id] = true; }
+            else if(ev.bill && ev.bill.id && /^bill_(new|edit|vanished_restored|recovered)$/.test(ev.ev)){
+              found.full.push({bill: ev.bill, src: "bill journal " + f.name.replace("journal-", "").replace(".jsonl", ""), ts: ts});
+            }
+          });
+        }).catch(function(){});
+      });
+    }).then(function(){
+      return listFilesIn("", /^bill-audit\.log$/);
+    }).then(function(files){
+      return runSequential(files, function(f){
+        return readFileText(f).then(function(t){ found.logNew = parseAuditLogNew(t); }).catch(function(){});
+      });
+    }).then(function(){
+      return computeRecoveryList(data.bills, data.deletedBillsLog, found);
+    });
+  }
+  function makePlaceholderBill(item){
+    var biz = data.business || {};
+    return {
+      id: uid("bill"), billNo: item.billNo, date: item.iso, table: "", tableId: null, customer: "", customerPhone: "",
+      paymentMode: "Cash", splitPayments: null, isCredit: false,
+      items: [{itemId: null, variantId: null, name: "Recovered bill (item details not available)", price: item.total, qty: 1,
+               taxPercent: 0, categoryId: null, categoryName: "", subcategoryId: null, subcategoryName: "", rateEdited: false}],
+      subtotal: item.total, discountAmount: 0, discountValue: 0, discountType: "amount",
+      taxLabel: biz.taxLabel, taxPercent: 0, tax: 0, serviceChargePercent: 0, service: 0,
+      isParcel: false, packingCharge: 0, total: item.total, currency: biz.currency,
+      recovered: true, recoveredAt: new Date().toISOString()
+    };
+  }
+  function renderRecoveryList(){
+    var box = document.getElementById("recoveryList");
+    var btn = document.getElementById("btnRestoreRecovered");
+    if(!box || !btn) return;
+    box.innerHTML = "";
+    if(!_recoveryItems.length){ btn.style.display = "none"; return; }
+    _recoveryItems.forEach(function(it, i){
+      var row = document.createElement("label");
+      row.className = "item-row";
+      row.style.cssText = "display:flex;gap:8px;align-items:center;cursor:pointer;";
+      var when = it.kind === "full" ? it.bill.date : it.iso;
+      var no = it.kind === "full" ? it.bill.billNo : it.billNo;
+      var total = it.kind === "full" ? it.bill.total : it.total;
+      row.innerHTML = '<input type="checkbox" checked data-rec="' + i + '">' +
+        '<div style="flex:1;"><div class="item-name">' + escapeHtml(no) + ' &middot; ' + fmt(total) + '</div>' +
+        '<div class="item-cat">' + escapeHtml(new Date(when).toLocaleString()) + ' &middot; from ' + escapeHtml(it.src) + '</div></div>';
+      box.appendChild(row);
+    });
+    btn.style.display = "";
+  }
+  (function wireRecoveryUi(){
+    var scanBtn = document.getElementById("btnScanRecovery");
+    var restoreBtn = document.getElementById("btnRestoreRecovered");
+    if(!scanBtn || !restoreBtn) return;
+    scanBtn.addEventListener("click", function(){
+      if(!isOwnerUser()){ showToast("Only the Owner can recover bills"); return; }
+      var status = document.getElementById("recoveryStatus");
+      status.textContent = "Searching backups, copies and logs...";
+      scanForMissingBills().then(function(list){
+        _recoveryItems = list;
+        status.textContent = list.length
+          ? list.length + " missing bill(s) found. Untick any you do not want, then press Restore."
+          : "No missing bills found.";
+        renderRecoveryList();
+      }).catch(function(err){
+        status.textContent = "Could not scan: " + ((err && err.message) || err);
+      });
+    });
+    restoreBtn.addEventListener("click", function(){
+      if(!isOwnerUser()){ showToast("Only the Owner can recover bills"); return; }
+      var picked = [];
+      document.querySelectorAll("#recoveryList input[data-rec]").forEach(function(cb){
+        if(cb.checked) picked.push(_recoveryItems[parseInt(cb.getAttribute("data-rec"), 10)]);
+      });
+      if(!picked.length){ showToast("Nothing selected"); return; }
+      if(!confirm("Put back " + picked.length + " bill(s) into Bill History? Bills marked 'item details not available' come back with their number and amount only.")) return;
+      var have = {};
+      data.bills.forEach(function(b){ have[b.id] = true; });
+      var added = 0;
+      picked.forEach(function(it){
+        var bill = it.kind === "full" ? JSON.parse(JSON.stringify(it.bill)) : makePlaceholderBill(it);
+        if(have[bill.id]) return;
+        bill.recovered = true;
+        bill.recoveredAt = new Date().toISOString();
+        bill.recoveredBy = currentUser ? currentUser.name : "";
+        data.bills.push(bill);
+        have[bill.id] = true;
+        journalAppend({ev: "bill_recovered", bill: bill});
+        added++;
+      });
+      saveData();
+      _recoveryItems = [];
+      renderRecoveryList();
+      renderHistory();
+      document.getElementById("recoveryStatus").textContent = added + " bill(s) restored.";
+      showToast(added + " bill(s) restored to Bill History");
+    });
+  })();
 
   function refreshAutoBackupStatusUi(){
     var statusEl = document.getElementById("autoBackupStatusText");
