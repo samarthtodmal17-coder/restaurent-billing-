@@ -86,6 +86,16 @@ fn get_device_fingerprint() -> Result<String, String> {
 
 fn main() {
     tauri::Builder::default()
+        // Must be registered FIRST. If a second copy is started, it exits at once
+        // and the already-running window is brought to the front instead.
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            use tauri::Manager;
+            if let Some(w) = app.get_webview_window("main") {
+                let _ = w.unminimize();
+                let _ = w.show();
+                let _ = w.set_focus();
+            }
+        }))
         .plugin(
             tauri_plugin_sql::Builder::default()
                 .add_migrations("sqlite:restaurant.db", migrations())

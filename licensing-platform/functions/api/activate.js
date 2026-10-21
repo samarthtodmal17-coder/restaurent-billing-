@@ -35,11 +35,13 @@ export async function onRequestOptions(context) {
 export async function onRequestPost(context) {
   try {
     const body = await context.request.json();
-    const licenseKey = (body.licenseKey || "").trim();
-    const productId = (body.productId || "").trim();
-    const deviceId = (body.deviceId || "").trim();
-    const appVersion = (body.appVersion || "").trim() || null;
-    const dbVersion = (body.dbVersion || "").trim() || null;
+    // String() first: some apps send dbVersion as a number (e.g. 1), and
+    // calling .trim() on a number threw and returned a 500 "Server error".
+    const licenseKey = String(body.licenseKey || "").trim();
+    const productId = String(body.productId || "").trim();
+    const deviceId = String(body.deviceId || "").trim();
+    const appVersion = String(body.appVersion || "").trim() || null;
+    const dbVersion = String(body.dbVersion || "").trim() || null;
 
     if (!licenseKey || !productId || !deviceId) {
       return jsonResponse({ ok: false, error: "Missing licenseKey, productId, or deviceId." }, 400);

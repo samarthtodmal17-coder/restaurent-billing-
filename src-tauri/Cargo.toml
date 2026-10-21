@@ -1,6 +1,6 @@
 [package]
 name = "restaurant-billing"
-version = "0.1.55"
+version = "0.1.56"
 description = "Manokshmi RestroBill - Tauri desktop shell (Phase 1: SQLite storage)"
 edition = "2021"
 
@@ -32,6 +32,10 @@ machine-uid = "0.6"
 # see README-PHASE1.md for the full one-time setup.
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
+# v0.1.56: only ONE copy of the app may run per PC. Two copies shared one
+# database file, each with its own in-memory bills, and each save deleted
+# the bills the other copy had created (missing bills, duplicate bill numbers).
+tauri-plugin-single-instance = "2"
 
 # No [lib] / [[bin]] section needed: this is a plain binary crate with a
 # single src/main.rs, which Cargo picks up automatically. (An earlier draft
