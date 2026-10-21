@@ -4919,7 +4919,7 @@ var qrcode = function() {
      ============================================================ */
   var LICENSE_API_BASE = "https://licensing-platform.pages.dev"; // set to the real deployed licensing-platform URL
   var PRODUCT_ID = "restaurant-pos";
-  var APP_VERSION = "0.1.58";
+  var APP_VERSION = "0.1.59";
   var DB_VERSION = "1";
   var LICENSED_TO = "";
 
@@ -6094,7 +6094,27 @@ var qrcode = function() {
       })
       .then(function(){
         var keep = data.bills.map(function(b){ return b.id; }).concat(_protectedBillIds);
-        return deleteMissingIds(db, "bills", keep);
+        // v0.1.58 DATABASE LOCK: migration 0007 makes SQLite itself refuse any
+        // DELETE on bills unless bill_delete_permit.allowed = 1. The permit is
+        // opened ONLY when this save really has bills to remove (a deliberate
+        // delete, or a full restore/reset), and closed again right after.
+        var keepSet = {};
+        keep.forEach(function(id){ keepSet[id] = true; });
+        return db.select("SELECT id FROM bills").then(function(rows){
+          var willDelete = rows.some(function(r){ return !keepSet[r.id]; });
+          if(!willDelete) return deleteMissingIds(db, "bills", keep); // nothing to remove
+          var permitOpened = false;
+          return db.execute("UPDATE bill_delete_permit SET allowed = 1 WHERE id = 1")
+            .then(function(){ permitOpened = true; }, function(){ /* lock table not present: no trigger either */ })
+            .then(function(){ return deleteMissingIds(db, "bills", keep); })
+            .then(function(r){
+              if(!permitOpened) return r;
+              return db.execute("UPDATE bill_delete_permit SET allowed = 0 WHERE id = 1").then(function(){ return r; });
+            }, function(err){
+              if(!permitOpened) throw err;
+              return db.execute("UPDATE bill_delete_permit SET allowed = 0 WHERE id = 1").then(function(){ throw err; }, function(){ throw err; });
+            });
+        });
       })
       .then(function(){ return deleteOrphanChildren(db, "bill_items", "bill_id", data.bills.map(function(b){ return b.id; }).concat(_protectedBillIds)); })
       .then(function(){ return deleteOrphanChildren(db, "bill_edit_history", "bill_id", data.bills.map(function(b){ return b.id; }).concat(_protectedBillIds)); })
