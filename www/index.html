@@ -1826,18 +1826,22 @@
     <div class="card" id="cardTables">
       <h2>🍽️ <span class="tables-label-text">Tables</span><span id="tablesRunningCount" class="tables-running-badge"></span></h2>
       <div id="tableMoveBanner" style="display:none;"></div>
+      <!-- v0.1.57: Parcel / walk-in orders live at the TOP, so with many tables
+           staff never have to scroll down to start or switch a parcel order. -->
+      <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:10px;">
+        <button class="btn small" id="btnNewParcelOrder" style="flex:1 1 auto;">📦 + New Parcel Order</button>
+        <button class="btn small secondary" id="btnNewWalkInOrder" style="flex:0 0 auto;">+ Walk-in (no table)</button>
+      </div>
+      <div id="otherOrdersWrap" style="display:none; margin-bottom:12px;">
+        <div class="subcategory-header" style="margin-left:0;">Open Parcel / Walk-in Orders (tap to switch)</div>
+        <div class="order-tabs-wrap" id="orderTabs" style="margin-top:6px;"></div>
+      </div>
       <div id="tablesGrid" class="tables-grid"></div>
 
       <div class="row" style="margin-top:12px;">
         <input type="text" id="newTableName" placeholder="e.g. T7, Patio 2, Room 305">
         <button class="btn small secondary" id="btnAddTable" style="flex:0 0 auto;">+ Add Table</button>
       </div>
-
-      <div id="otherOrdersWrap" style="display:none; margin-top:14px;">
-        <div class="subcategory-header" style="margin-left:0;">Other Open Orders (no table assigned)</div>
-        <div class="order-tabs-wrap" id="orderTabs" style="margin-top:6px;"></div>
-      </div>
-      <button class="btn small secondary" id="btnNewWalkInOrder" style="margin-top:10px;">+ Walk-in Order (no table)</button>
       <p class="muted" style="margin-top:8px;">Tap a free table to start billing it, tap an occupied one to switch to it, or use Move to shift a running order to another table. Each order stays open until you save &amp; print it.</p>
     </div>
 
@@ -8479,6 +8483,7 @@ var qrcode = function() {
     });
     if(blankWalkIn){
       activeOrderId = blankWalkIn.id;
+      blankWalkIn.isParcel = parcelModeDefault; // empty order: safe to follow the remembered mode
       resetItemSearchUI();
     } else {
       createNewOrder(); // blank walk-in order, sets activeOrderId itself
@@ -8490,6 +8495,11 @@ var qrcode = function() {
       pickDefaultActiveOrder();
     }
   }
+
+  // v0.1.57: remembers whether the last walk-in order was Parcel, so the next
+  // blank walk-in order opens as Parcel too (no re-clicking Parcel every bill).
+  // Table orders are never affected. Clicking Dine-in turns it off again.
+  var parcelModeDefault = false;
 
   function createNewOrder(tableId, tableName){
     var order = {
@@ -8504,7 +8514,7 @@ var qrcode = function() {
       paymentMode: "Cash",
       splitEnabled: false,
       splitPayments: null,
-      isParcel: false,
+      isParcel: !tableId && parcelModeDefault,
       packingChargeOverride: null,
       kotSent: {},
       createdAt: new Date().toISOString()
@@ -8901,11 +8911,11 @@ var qrcode = function() {
     var walkInOrders = data.openOrders.filter(function(o){ return !o.tableId; });
     var otherWrap = document.getElementById("otherOrdersWrap");
     otherWrap.style.display = walkInOrders.length ? "block" : "none";
-    walkInOrders.forEach(function(o){
+    walkInOrders.forEach(function(o, idx){
       var chip = document.createElement("div");
       chip.className = "order-chip" + (o.id === activeOrderId ? " active" : "");
 
-      var label = o.table ? o.table : "New Order";
+      var label = o.table ? o.table : ((o.isParcel ? "📦 Parcel " : "Walk-in ") + (idx + 1));
       var itemCount = o.items.reduce(function(s, i){ return s + i.qty; }, 0);
       var t = computeTotalsForOrder(o);
 
@@ -10246,6 +10256,25 @@ var qrcode = function() {
     renderBillingScreen();
   });
 
+  // One tap: a fresh Parcel order, ready to add items. Several can be open at
+  // once (each shows as a chip at the top of the Tables card). An empty
+  // walk-in order that's already sitting open is reused instead of piling up.
+  document.getElementById("btnNewParcelOrder").addEventListener("click", function(){
+    parcelModeDefault = true;
+    var blank = data.openOrders.find(function(o){ return !o.tableId && o.items.length === 0; });
+    if(blank){
+      activeOrderId = blank.id;
+      blank.isParcel = true;
+      resetItemSearchUI();
+      saveData();
+    } else {
+      createNewOrder(); // picks up parcelModeDefault -> isParcel = true
+    }
+    renderBillingScreen();
+    var searchEl = document.getElementById("itemSearch");
+    if(searchEl) searchEl.focus();
+  });
+
   // Debounced so a fast typist (or a long menu) doesn't force a full
   // re-render of the picker on every single keystroke -- this is the main
   // fix for search feeling sluggish on large menus.
@@ -10437,6 +10466,7 @@ var qrcode = function() {
   document.getElementById("btnDineIn").addEventListener("click", function(){
     var order = getActiveOrder();
     order.isParcel = false;
+    parcelModeDefault = false;
     saveData();
     syncParcelUI(order);
     renderTotals();
@@ -10446,6 +10476,7 @@ var qrcode = function() {
   document.getElementById("btnParcel").addEventListener("click", function(){
     var order = getActiveOrder();
     order.isParcel = true;
+    parcelModeDefault = !order.tableId;
     saveData();
     syncParcelUI(order);
     renderTotals();
@@ -10734,6 +10765,7 @@ var qrcode = function() {
     applyIngredientConsumption(computeIngredientConsumption(itemsSnapshot), "sale", bill.id);
 
     var finishedOrderId = order.id;
+    parcelModeDefault = !!order.isParcel && !order.tableId; // next walk-in starts as Parcel too
     saveData();
     updateCreditTabBadge();
     showReceipt(bill);
