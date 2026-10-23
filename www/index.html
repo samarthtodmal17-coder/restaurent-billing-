@@ -4919,7 +4919,7 @@ var qrcode = function() {
      ============================================================ */
   var LICENSE_API_BASE = "https://licensing-platform.pages.dev"; // set to the real deployed licensing-platform URL
   var PRODUCT_ID = "restaurant-pos";
-  var APP_VERSION = "0.1.63";
+  var APP_VERSION = "0.1.64";
   var DB_VERSION = "1";
   var LICENSED_TO = "";
 
@@ -11247,7 +11247,15 @@ var qrcode = function() {
       printDayBtn.textContent = "Print Day Closing";
       printDayBtn.style.marginTop = "8px";
       printDayBtn.addEventListener("click", function(){
-        showClosingReport("Day Closing Report", formatDateHeader(g.key), g.bills, g.paymentTotals, g.key, g.key);
+        healBeforeReport().then(function(changed){
+          var dayBills = g.bills, dayPay = g.paymentTotals;
+          if(changed){ // a missing bill was just put back: work the totals out again from the full list
+            dayBills = data.bills.filter(function(b){ return dateKey(b.date) === g.key; }).sort(compareBillsChrono).reverse();
+            dayPay = computePaymentTotals(dayBills);
+            try{ renderHistory(); }catch(e){}
+          }
+          showClosingReport("Day Closing Report", formatDateHeader(g.key), dayBills, dayPay, g.key, g.key);
+        });
       });
       dayTotalBox.appendChild(printDayBtn);
       list.appendChild(dayTotalBox);
@@ -11770,7 +11778,12 @@ var qrcode = function() {
   document.getElementById("dashFromDate").addEventListener("change", renderDashboard);
   document.getElementById("dashToDate").addEventListener("change", renderDashboard);
 
+  var _reportHealed = false;
   document.getElementById("btnViewDashboardReport").addEventListener("click", function(){
+    if(!_reportHealed){
+      healBeforeReport().then(function(){ _reportHealed = true; document.getElementById("btnViewDashboardReport").click(); _reportHealed = false; });
+      return;
+    }
     var fromVal = document.getElementById("dashFromDate").value;
     var toVal = document.getElementById("dashToDate").value;
     var billsForReport = data.bills.filter(function(b){
@@ -13889,7 +13902,7 @@ var qrcode = function() {
   // deleted, or data cleared by a deliberate reset, is never brought back. Bills that only
   // the log remembers (no item lines) are NOT added silently: the owner is told instead.
   var _gapRecoverBusy = false, _gapAttempts = {};
-  function autoRecoverGaps(){
+  function autoRecoverGaps(force){
     try{
       if(_gapRecoverBusy || !data || !data.bills || !(window.__TAURI__ && window.__TAURI__.fs)) return Promise.resolve(0);
       var cutoff = localDateKey(new Date(Date.now() - 8 * 86400000));
@@ -13899,7 +13912,7 @@ var qrcode = function() {
       if(!gapDays.length) return Promise.resolve(0);
       var sig = gapDays.map(function(k){ return k + ":" + missingBillNumbersForDay(k).join(","); }).join("|");
       var last = _gapAttempts[sig];
-      if(last && Date.now() - last < 30 * 60 * 1000) return Promise.resolve(0); // same gap tried recently
+      if(!force && last && Date.now() - last < 30 * 60 * 1000) return Promise.resolve(0); // same gap tried recently
       _gapAttempts[sig] = Date.now();
       _gapRecoverBusy = true;
       return scanForMissingBills().then(function(list){
@@ -13929,6 +13942,17 @@ var qrcode = function() {
       }).catch(function(e){ debugLog("auto gap recovery failed: " + (e && e.message)); return 0; })
         .then(function(r){ _gapRecoverBusy = false; return r; });
     }catch(e){ _gapRecoverBusy = false; return Promise.resolve(0); }
+  }
+
+
+  // Run just before a report is printed and just before the app closes: one more look in the
+  // journal and safety copies, so even the LAST bill of the day (which a number gap cannot
+  // reveal) is back before the totals are worked out. Never waits more than ~3 s.
+  function healBeforeReport(){
+    var work = autoRestoreBillsFromJournal().catch(function(){ return 0; }).then(function(n1){
+      return autoRecoverGaps(true).catch(function(){ return 0; }).then(function(n2){ return (n1 || 0) + (n2 || 0); });
+    });
+    return Promise.race([work, sleep(3000).then(function(){ return 0; })]);
   }
 
   var _safetyStarted = false;
@@ -14349,6 +14373,9 @@ var qrcode = function() {
       // is allowed to die, regardless of whether step 1 finished in time.
       var saveAndBackup = Promise.race([
         _saveChain.then(function(){
+          // one last look for a missing bill (e.g. the last bill of the day) before the end-of-day backup
+          return Promise.race([autoRestoreBillsFromJournal().catch(function(){ return 0; }), sleep(2000)]).then(function(){ return _saveChain; });
+        }).then(function(){
           persistDebugLog("close-requested: pending save (if any) finished");
           return runEndOfDayBackup().then(function(){
             persistDebugLog("close-requested: end-of-day backup finished OK");
