@@ -4919,7 +4919,7 @@ var qrcode = function() {
      ============================================================ */
   var LICENSE_API_BASE = "https://licensing-platform.pages.dev"; // set to the real deployed licensing-platform URL
   var PRODUCT_ID = "restaurant-pos";
-  var APP_VERSION = "0.1.59";
+  var APP_VERSION = "0.1.60";
   var DB_VERSION = "1";
   var LICENSED_TO = "";
 
@@ -5338,6 +5338,7 @@ var qrcode = function() {
 
         // v0.1.56: remember exactly which rows this copy of the app has loaded.
         // A routine save may only delete rows it has seen (see deleteMissingIds).
+        seedBillSigs(bills);
         _seenIds = {};
         resetSeen("categories", categoryRows.map(function(r){ return r.id; }));
         resetSeen("subcategories", subcategoryRows.map(function(r){ return r.id; }));
@@ -5463,6 +5464,30 @@ var qrcode = function() {
   document.addEventListener("keydown", function(e){
     if(/^F\d+$|^Delete$|^Escape$/.test(e.key)) addCrumb("key " + e.key);
   }, true);
+  // v0.1.60: the page must never be reloaded by accident. A reload throws away
+  // anything that is still being saved. Everything saves by itself, so refresh keys
+  // and the right-click "Refresh/Reload" menu are switched off.
+  document.addEventListener("keydown", function(e){
+    var k = e.key, ctl = e.ctrlKey || e.metaKey;
+    if((ctl && (k === "r" || k === "R")) || (k === "F5" && (ctl || e.shiftKey))){
+      e.preventDefault(); e.stopPropagation();
+      showToast("No need to refresh - everything saves by itself.");
+    } else if(k === "F5"){
+      e.preventDefault(); // F5 is the payment-mode shortcut inside the app, never a reload
+    }
+  }, true);
+  document.addEventListener("contextmenu", function(e){
+    var t = e.target;
+    if(t && t.closest && t.closest("input, textarea, [contenteditable]")) return; // keep copy/paste menu in text fields
+    e.preventDefault();
+  }, true);
+  window.addEventListener("beforeunload", function(e){
+    if(_savesInFlight > 0 || _pendingBillWrites > 0){
+      e.preventDefault();
+      e.returnValue = "Still saving - please wait a moment.";
+      return e.returnValue;
+    }
+  });
   function auditLogLine(line){
     try{
       if(!(window.__TAURI__ && window.__TAURI__.fs && window.__TAURI__.path)) return;
@@ -5548,6 +5573,7 @@ var qrcode = function() {
   }
 
   var _saveChain = Promise.resolve();
+  var _savesInFlight = 0;
   // `options.allowXWipe` flags (menu/bills/staff/inventory/credit/tables/
   // categories) -- see WIPE_GUARDS and ensureNoSilentWipe() below. Every
   // routine save omits all of them, which is the point: they're an opt-IN
@@ -5557,6 +5583,8 @@ var qrcode = function() {
   function saveData(options){
     itemCodeIndexCache = null;
     auditBills(options);
+    persistBillsNow();
+    _savesInFlight++;
     _saveChain = _saveChain.then(function(){ return doSaveWithRetry(4, options); }).then(function(){
       debugLog("doSave() completed OK");
     }).catch(function(err){
@@ -5581,7 +5609,7 @@ var qrcode = function() {
       // changes that never reached disk.
       showToast(err && err.userMessage ? err.userMessage :
         "Could not save your last change. Please close and reopen the app; if this keeps happening, export a backup from Settings and contact support.");
-    });
+    }).then(function(){ _savesInFlight--; });
     return _saveChain;
   }
 
@@ -5603,6 +5631,7 @@ var qrcode = function() {
   function saveDataOrThrow(options){
     itemCodeIndexCache = null;
     auditBills(options);
+    persistBillsNow();
     var attempt = doSaveWithRetry(4, options).then(function(){
       debugLog("doSave() completed OK");
     }).catch(function(err){
@@ -5777,6 +5806,137 @@ var qrcode = function() {
   }
 
   var _protectedBillIds = [];
+
+  // ================= v0.1.60 BILL WRITE-THROUGH =================
+  // ROOT CAUSE of "bills vanish after refresh": doSave() is a long chain of
+  // hundreds of single statements, and the bill rows used to be written
+  // near the END of it (after menu, tables, orders ...), while the bill
+  // NUMBER counter was written at the START. A refresh / close / crash in
+  // between left the number used but the bill never on disk. Fix:
+  //   1. a bill (new or changed) is written to the database FIRST, on its own
+  //      fast lane, the moment saveData() is called -- not at the end of the chain;
+  //   2. unchanged bills are skipped (a save no longer rewrites every bill ever made);
+  //   3. every bill is also in the append-only journal, and any bill that is in
+  //      the journal but not in the database is put back automatically at start-up.
+  var _billPersistedSig = {};          // id -> JSON of the bill as last written to / loaded from disk
+  var _billWriteLock = Promise.resolve();
+  var _pendingBillWrites = 0;
+  function billFullSig(b){ try{ return JSON.stringify(b); }catch(e){ return null; } }
+  function seedBillSigs(list){
+    _billPersistedSig = {};
+    (list || []).forEach(function(b){ _billPersistedSig[b.id] = billFullSig(b); });
+  }
+  function saveBillRow(db, b){
+    return db.execute(
+      "INSERT INTO bills (id, bill_no, date, table_id, table_name, customer, customer_phone, payment_mode, " +
+      "split_payments, is_credit, credit_paid, subtotal, discount_amount, discount_value, discount_type, tax_label, " +
+      "tax_percent, tax, tax_by_rate, service_charge_percent, service, is_parcel, packing_charge, total, currency, edited_at, edited_by, " +
+      "cancelled_items_json, cancelled_reason) " +
+      "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29) " +
+      "ON CONFLICT(id) DO UPDATE SET bill_no=excluded.bill_no, date=excluded.date, table_id=excluded.table_id, " +
+      "table_name=excluded.table_name, customer=excluded.customer, customer_phone=excluded.customer_phone, " +
+      "payment_mode=excluded.payment_mode, split_payments=excluded.split_payments, is_credit=excluded.is_credit, " +
+      "credit_paid=excluded.credit_paid, subtotal=excluded.subtotal, discount_amount=excluded.discount_amount, " +
+      "discount_value=excluded.discount_value, discount_type=excluded.discount_type, tax_label=excluded.tax_label, " +
+      "tax_percent=excluded.tax_percent, tax=excluded.tax, tax_by_rate=excluded.tax_by_rate, " +
+      "service_charge_percent=excluded.service_charge_percent, service=excluded.service, is_parcel=excluded.is_parcel, " +
+      "packing_charge=excluded.packing_charge, total=excluded.total, currency=excluded.currency, edited_at=excluded.edited_at, " +
+      "edited_by=excluded.edited_by, cancelled_items_json=excluded.cancelled_items_json, cancelled_reason=excluded.cancelled_reason",
+      [b.id, b.billNo, b.date, b.tableId || null, b.table || null, b.customer || null, b.customerPhone || null,
+       b.paymentMode || null, b.splitPayments ? JSON.stringify(b.splitPayments) : null, b.isCredit ? 1 : 0,
+       b.isCredit ? (b.creditPaid || 0) : null, b.subtotal || 0, b.discountAmount || 0, b.discountValue || 0,
+       b.discountType || "amount", b.taxLabel || null, b.taxPercent != null ? b.taxPercent : null, b.tax || 0,
+       b.taxByRate ? JSON.stringify(b.taxByRate) : null, b.serviceChargePercent != null ? b.serviceChargePercent : null,
+       b.service || 0, b.isParcel ? 1 : 0, b.packingCharge || 0, b.total || 0, b.currency || null, b.editedAt || null,
+       b.editedBy || null, b.cancelledItems ? JSON.stringify(b.cancelledItems) : null, b.cancelledReason || null]
+    ).then(function(){
+      // Insert-first, delete-last -- see resyncChildRows above.
+      return resyncChildRows(db, "bill_items", "bill_id", b.id, function(){
+        return runSequential(b.items || [], function(it, i){ return insertLineItem(db, "bill_items", "bill_id", b.id, it, i); });
+      });
+    }).then(function(){
+      return resyncChildRows(db, "bill_edit_history", "bill_id", b.id, function(){
+        if(!b.editHistory || !b.editHistory.length) return Promise.resolve();
+        return runSequential(b.editHistory, function(h){
+          return db.execute(
+            "INSERT INTO bill_edit_history (bill_id, edited_at, edited_by, previous_items, previous_total, previous_discount_amount, previous_table, previous_customer, previous_payment_mode) " +
+            "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)",
+            [b.id, h.editedAt, h.editedBy || null, JSON.stringify(h.previousItems || []), h.previousTotal || 0, h.previousDiscountAmount || 0,
+             h.previousTable || null, h.previousCustomer || null, h.previousPaymentMode || null]
+          );
+        });
+      });
+    });
+  }
+  // Writes every new / changed bill (and any bill missing on disk). Serialised, so the
+  // fast lane and the main save never write the same bill at the same time.
+  function writeDirtyBills(db, skipDiskCheck){
+    var run = function(){
+      var dirty = (data.bills || []).filter(function(b){ return _billPersistedSig[b.id] !== billFullSig(b); });
+      var check = skipDiskCheck ? Promise.resolve(null) : db.select("SELECT id FROM bills").catch(function(){ return null; });
+      return check.then(function(rows){
+        if(rows){
+          var onDisk = {};
+          rows.forEach(function(r){ onDisk[r.id] = true; });
+          (data.bills || []).forEach(function(b){
+            if(!onDisk[b.id] && dirty.indexOf(b) < 0) dirty.push(b);
+          });
+        }
+        return runSequential(dirty, function(b){
+          var sigNow = billFullSig(b);
+          return saveBillRow(db, b).then(function(){ _billPersistedSig[b.id] = sigNow; });
+        });
+      });
+    };
+    var p = _billWriteLock.catch(function(){}).then(run);
+    _billWriteLock = p.catch(function(){});
+    return p;
+  }
+  // Fast lane: called from saveData() so a new bill reaches the database at once,
+  // without waiting behind a long routine save. Also records the bill counter.
+  var _lastFastLane = Promise.resolve();
+  function persistBillsNow(){
+    try{
+      if(!data || !data.bills) return _lastFastLane;
+      var anyDirty = data.bills.some(function(b){ return _billPersistedSig[b.id] !== billFullSig(b); });
+      if(!anyDirty) return _lastFastLane;
+      _pendingBillWrites++;
+      _lastFastLane = getDb().then(function(db){
+        return writeDirtyBills(db, true).then(function(){
+          var biz = data.business;
+          return db.execute("UPDATE business_settings SET daily_seq=$1, last_bill_date_key=$2 WHERE id=1", [biz.dailySeq, biz.lastBillDateKey]);
+        });
+      }).catch(function(err){
+        debugLog("fast bill write failed (the normal save will retry): " + (err && err.message));
+      }).then(function(){ _pendingBillWrites--; });
+      return _lastFastLane;
+    }catch(e){ return Promise.resolve(); }
+  }
+  // "Saved" is only shown once the bill is really on disk: in the database AND in the
+  // journal. If that takes longer than ~4 s the cashier gets a clear warning (and the
+  // write keeps being retried) instead of a false "Bill saved".
+  var _billSaving = false;
+  function whenBillDurable(bill, proceed){
+    var timer = new Promise(function(res){ setTimeout(res, 4000); });
+    Promise.race([
+      Promise.all([_lastFastLane, _journalChain.catch(function(){})]),
+      timer
+    ]).then(function(){
+      var tries = 0;
+      function confirmed(){ return _billPersistedSig[bill.id] === billFullSig(bill); }
+      if(!confirmed()){
+        showToast("WARNING: bill " + bill.billNo + " is not on disk yet. Do NOT close the app - retrying.");
+        (function retry(){
+          if(confirmed() || tries++ > 30) return;
+          persistBillsNow();
+          setTimeout(retry, 2000);
+        })();
+      }
+      _billSaving = false;
+      proceed();
+    }).catch(function(){ _billSaving = false; proceed(); });
+  }
+
   function doSave(options){
     options = options || {};
     _curSaveOptions = options;
@@ -5816,7 +5976,7 @@ var qrcode = function() {
       return ensureNoSilentWipe(db, options).then(function(){ return db; });
     }).then(function(db){
       var biz = data.business;
-      return db.execute(
+      return writeDirtyBills(db).then(function(){ return db.execute(
         "UPDATE business_settings SET name=$1, logo=$2, address=$3, phone=$4, footer=$5, currency=$6, " +
         "tax_label=$7, tax_percent=$8, service_charge_percent=$9, bill_prefix=$10, receipt_paper_width=$11, " +
         "receipt_paper_width_custom=$12, kot_paper_width=$13, kot_paper_width_custom=$14, packing_charge_type=$15, " +
@@ -5826,7 +5986,7 @@ var qrcode = function() {
          biz.serviceChargePercent, biz.billPrefix, biz.receiptPaperWidth, biz.receiptPaperWidthCustom,
          biz.kotPaperWidth, biz.kotPaperWidthCustom, biz.packingChargeType, biz.packingChargeValue,
          biz.rawBtAutoPrint ? 1 : 0, biz.dailySeq, biz.lastBillDateKey, biz.upiId, biz.showUpiQr ? 1 : 0, biz.billDesign || "classic"]
-      )
+      ); })
       .then(function(){ return runSequential(data.categories, function(c, i){
         // v0.1.40 fix: was INSERT OR REPLACE. An audit confirmed this app's
         // SQLite connections run with foreign_keys=ON (sqlx's own default --
@@ -6022,48 +6182,8 @@ var qrcode = function() {
       .then(function(){ return deleteMissingIds(db, "open_orders", data.openOrders.map(function(o){ return o.id; })); })
       .then(function(){ return deleteOrphanChildren(db, "order_items", "order_id", data.openOrders.map(function(o){ return o.id; })); })
 
-      .then(function(){ return runSequential(data.bills, function(b){
-        return db.execute(
-          "INSERT INTO bills (id, bill_no, date, table_id, table_name, customer, customer_phone, payment_mode, " +
-          "split_payments, is_credit, credit_paid, subtotal, discount_amount, discount_value, discount_type, tax_label, " +
-          "tax_percent, tax, tax_by_rate, service_charge_percent, service, is_parcel, packing_charge, total, currency, edited_at, edited_by, " +
-          "cancelled_items_json, cancelled_reason) " +
-          "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29) " +
-          "ON CONFLICT(id) DO UPDATE SET bill_no=excluded.bill_no, date=excluded.date, table_id=excluded.table_id, " +
-          "table_name=excluded.table_name, customer=excluded.customer, customer_phone=excluded.customer_phone, " +
-          "payment_mode=excluded.payment_mode, split_payments=excluded.split_payments, is_credit=excluded.is_credit, " +
-          "credit_paid=excluded.credit_paid, subtotal=excluded.subtotal, discount_amount=excluded.discount_amount, " +
-          "discount_value=excluded.discount_value, discount_type=excluded.discount_type, tax_label=excluded.tax_label, " +
-          "tax_percent=excluded.tax_percent, tax=excluded.tax, tax_by_rate=excluded.tax_by_rate, " +
-          "service_charge_percent=excluded.service_charge_percent, service=excluded.service, is_parcel=excluded.is_parcel, " +
-          "packing_charge=excluded.packing_charge, total=excluded.total, currency=excluded.currency, edited_at=excluded.edited_at, " +
-          "edited_by=excluded.edited_by, cancelled_items_json=excluded.cancelled_items_json, cancelled_reason=excluded.cancelled_reason",
-          [b.id, b.billNo, b.date, b.tableId || null, b.table || null, b.customer || null, b.customerPhone || null,
-           b.paymentMode || null, b.splitPayments ? JSON.stringify(b.splitPayments) : null, b.isCredit ? 1 : 0,
-           b.isCredit ? (b.creditPaid || 0) : null, b.subtotal || 0, b.discountAmount || 0, b.discountValue || 0,
-           b.discountType || "amount", b.taxLabel || null, b.taxPercent != null ? b.taxPercent : null, b.tax || 0,
-           b.taxByRate ? JSON.stringify(b.taxByRate) : null, b.serviceChargePercent != null ? b.serviceChargePercent : null,
-           b.service || 0, b.isParcel ? 1 : 0, b.packingCharge || 0, b.total || 0, b.currency || null, b.editedAt || null,
-           b.editedBy || null, b.cancelledItems ? JSON.stringify(b.cancelledItems) : null, b.cancelledReason || null]
-        ).then(function(){
-          // Insert-first, delete-last -- see resyncChildRows above.
-          return resyncChildRows(db, "bill_items", "bill_id", b.id, function(){
-            return runSequential(b.items || [], function(it, i){ return insertLineItem(db, "bill_items", "bill_id", b.id, it, i); });
-          });
-        }).then(function(){
-          return resyncChildRows(db, "bill_edit_history", "bill_id", b.id, function(){
-            if(!b.editHistory || !b.editHistory.length) return Promise.resolve();
-            return runSequential(b.editHistory, function(h){
-              return db.execute(
-                "INSERT INTO bill_edit_history (bill_id, edited_at, edited_by, previous_items, previous_total, previous_discount_amount, previous_table, previous_customer, previous_payment_mode) " +
-                "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)",
-                [b.id, h.editedAt, h.editedBy || null, JSON.stringify(h.previousItems || []), h.previousTotal || 0, h.previousDiscountAmount || 0,
-                 h.previousTable || null, h.previousCustomer || null, h.previousPaymentMode || null]
-              );
-            });
-          });
-        });
-      }); })
+      // v0.1.60: bills are written by writeDirtyBills(): new/changed bills FIRST (see top of this chain) and again here to catch any change made while this save was running.
+      .then(function(){ return writeDirtyBills(db); })
       // v0.1.55 BILL GUARD: a bill may only be removed from disk if the user
       // deliberately deleted it (it then has an entry in deletedBillsLog) or
       // this is a full restore/reset (allowBillsWipe). Any other bill that is
@@ -10637,6 +10757,7 @@ var qrcode = function() {
   });
 
   document.getElementById("btnSaveBill").addEventListener("click", function(){
+    if(_billSaving) return; // previous bill is still being written to disk
     var order = getActiveOrder();
     if(order.items.length === 0){
       showToast("Add at least one item first");
@@ -10721,12 +10842,15 @@ var qrcode = function() {
         flushCancelledSessionToBill(order, existingBill);
 
         var finishedEditOrderId = order.id;
+        _billSaving = true;
         saveData();
         updateCreditTabBadge();
-        showReceipt(existingBill);
-        discardOrder(finishedEditOrderId);
-        showToast("Bill updated: " + existingBill.billNo);
-        printReceiptNow("receipt");
+        whenBillDurable(existingBill, function(){
+          showReceipt(existingBill);
+          discardOrder(finishedEditOrderId);
+          showToast("Bill updated: " + existingBill.billNo);
+          printReceiptNow("receipt");
+        });
       } else {
         showToast("That bill no longer exists (it may have been deleted)");
       }
@@ -10786,15 +10910,18 @@ var qrcode = function() {
 
     var finishedOrderId = order.id;
     parcelModeDefault = !!order.isParcel && !order.tableId; // next walk-in starts as Parcel too
+    _billSaving = true; // blocks a double-click from making a second bill while this one is being written
     saveData();
     updateCreditTabBadge();
-    showReceipt(bill);
-    discardOrder(finishedOrderId);
-    showToast("Bill saved: " + billNo);
-    setTimeout(checkBillGapsToday, 2500);
-    // One click does it all: saving the bill immediately opens the print
-    // dialog too, instead of making you click "Print Now" separately.
-    printReceiptNow("receipt");
+    whenBillDurable(bill, function(){
+      showReceipt(bill);
+      discardOrder(finishedOrderId);
+      showToast("Bill saved: " + billNo);
+      setTimeout(checkBillGapsToday, 2500);
+      // One click does it all: saving the bill immediately opens the print
+      // dialog too, instead of making you click "Print Now" separately.
+      printReceiptNow("receipt");
+    });
   });
 
   /* ================= HISTORY ================= */
@@ -13666,6 +13793,58 @@ var qrcode = function() {
       .then(function(){ persistDebugLog("safety copy written: " + safe); })
       .catch(function(e){ persistDebugLog("safety copy FAILED (" + safe + "): " + (e && e.message)); });
   }
+
+  // v0.1.60 SELF-HEALING START-UP. Every new bill is written in full to the append-only
+  // journal the instant it is made. If a bill is in the journal but NOT in the database
+  // (the app was refreshed / closed / crashed before the database write finished), it is
+  // put back automatically here -- with all its items. Bills the owner deleted on purpose,
+  // and anything before a deliberate full restore/reset, are never brought back.
+  function autoRestoreBillsFromJournal(){
+    if(!(window.__TAURI__ && window.__TAURI__.fs && window.__TAURI__.path)) return Promise.resolve(0);
+    return listFilesIn(SAFETY_JOURNAL_DIR, /^journal-\d{4}-\d{2}-\d{2}\.jsonl$/).then(function(files){
+      files = files.slice(-14); // last 14 days of journal
+      var map = {};
+      return runSequential(files, function(f){
+        return readFileText(f).then(function(t){
+          t.split(/\r?\n/).forEach(function(line){
+            if(!line) return;
+            var ev; try{ ev = JSON.parse(line); }catch(e){ return; }
+            if(ev.ev === "data_replaced"){ map = {}; return; }
+            if(!ev.bill || !ev.bill.id) return;
+            if(ev.ev === "bill_delete"){ delete map[ev.bill.id]; return; }
+            if(/^bill_(new|edit|vanished_restored|recovered)$/.test(ev.ev)) map[ev.bill.id] = ev.bill;
+          });
+        }).catch(function(){});
+      }).then(function(){
+        var have = {}, del = {};
+        (data.bills || []).forEach(function(b){ have[b.id] = true; });
+        (data.deletedBillsLog || []).forEach(function(d){ if(d.originalBillId) del[d.originalBillId] = true; });
+        var restored = [];
+        Object.keys(map).forEach(function(id){
+          var b = map[id];
+          if(have[id] || del[id] || !b.billNo || !b.date) return;
+          var dup = (data.bills || []).some(function(x){
+            return x.billNo === b.billNo && dateKey(x.date) === dateKey(b.date) && Number(x.total) === Number(b.total);
+          });
+          if(!dup) restored.push(b);
+        });
+        if(!restored.length) return 0;
+        restored.sort(function(a, b){ return new Date(a.date) - new Date(b.date); });
+        restored.forEach(function(b){
+          data.bills.push(b);
+          var num = billNumberOf(b.billNo);
+          if(num !== null && data.business && data.business.lastBillDateKey === dateKey(b.date) && num > (data.business.dailySeq || 0)){
+            data.business.dailySeq = num;
+          }
+          auditLogLine("AUTO-RESTORED " + b.billNo + " total=" + b.total + " (was in the journal but not in the database)");
+        });
+        auditBaseline();
+        saveData();
+        return restored.length;
+      });
+    });
+  }
+
   var _safetyStarted = false;
   function startSafetyServices(){
     if(_safetyStarted) return;
@@ -13689,6 +13868,13 @@ var qrcode = function() {
       });
     }, 60 * 60 * 1000);
     journalAppend({ev: "app_start", bills: (data.bills || []).length});
+    autoRestoreBillsFromJournal().then(function(count){
+      if(count){
+        showToast(count + " bill(s) that were not fully saved were restored automatically.");
+        try{ renderBillingScreen(); }catch(e){}
+        try{ renderHistory(); }catch(e){}
+      }
+    }).catch(function(e){ debugLog("auto-restore from journal failed: " + (e && e.message)); });
   }
 
   /* ================= v0.1.56 RECOVER MISSING BILLS =================
