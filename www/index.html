@@ -4919,7 +4919,7 @@ var qrcode = function() {
      ============================================================ */
   var LICENSE_API_BASE = "https://licensing-platform.pages.dev"; // set to the real deployed licensing-platform URL
   var PRODUCT_ID = "restaurant-pos";
-  var APP_VERSION = "0.1.62";
+  var APP_VERSION = "0.1.63";
   var DB_VERSION = "1";
   var LICENSED_TO = "";
 
@@ -5553,8 +5553,9 @@ var qrcode = function() {
           auditLogLine("VANISHED " + lost.billNo + " total=" + lost.total + " | last actions: " + _crumbs.join(" ; "));
           journalAppend({ev: "bill_vanished_restored", bill: lost});
           data.bills.push(lost); // self-heal: put it back
+          data.bills.sort(compareBillsChrono); // ...in its own place, not as the newest bill
           cur[id] = lost;
-          showToast("Bill " + lost.billNo + " was restored (it disappeared unexpectedly)");
+          // silent on purpose: the cashier is never bothered; the audit log keeps the record
         }
       });
       (data.creditPayments || []).forEach(function(c){
@@ -6210,7 +6211,8 @@ var qrcode = function() {
               old.push({at: new Date().toISOString(), bills: msg});
               localStorage.setItem(logKey, JSON.stringify(old.slice(-50)));
             }catch(e){}
-            if(typeof showToast === "function") showToast("Protected bill(s) from vanishing: " + msg + ". Restart the app to see them again.");
+            // silent on purpose: put them back in the open session from the journal / safety copies
+            setTimeout(function(){ try{ autoRestoreBillsFromJournal().then(function(){ return autoRecoverGaps(); }); }catch(e){} }, 300);
           }
         });
       })
@@ -10992,7 +10994,7 @@ var qrcode = function() {
       if(nums.length && text !== _lastGapAlert){
         _lastGapAlert = text;
         auditLogLine("GAP today missing numbers: " + text);
-        showToast("Warning: bill number(s) missing today: " + text + ". Open History to check.");
+        autoRecoverGaps(); // silent: look for the bill in the safety copies and put it back
       }
     }catch(e){}
   }
@@ -13878,6 +13880,57 @@ var qrcode = function() {
     });
   }
 
+
+  // v0.1.62 AUTO-DETECT + AUTO-RECOVER OF VANISHED BILLS.
+  // A "vanished" bill is one whose number is missing from a day's numbering (1..last) with no
+  // owner-delete record. When such a gap is found, the app looks for the bill's full copy in
+  // the journal, hourly copies, daily backups and safety copies and puts it back in its own
+  // day and its own place in the numbering. It only fills real gaps, so a bill the owner
+  // deleted, or data cleared by a deliberate reset, is never brought back. Bills that only
+  // the log remembers (no item lines) are NOT added silently: the owner is told instead.
+  var _gapRecoverBusy = false, _gapAttempts = {};
+  function autoRecoverGaps(){
+    try{
+      if(_gapRecoverBusy || !data || !data.bills || !(window.__TAURI__ && window.__TAURI__.fs)) return Promise.resolve(0);
+      var cutoff = localDateKey(new Date(Date.now() - 8 * 86400000));
+      var dayHas = {};
+      data.bills.forEach(function(b){ dayHas[dateKey(b.date)] = true; });
+      var gapDays = Object.keys(dayHas).filter(function(k){ return k >= cutoff && missingBillNumbersForDay(k).length > 0; });
+      if(!gapDays.length) return Promise.resolve(0);
+      var sig = gapDays.map(function(k){ return k + ":" + missingBillNumbersForDay(k).join(","); }).join("|");
+      var last = _gapAttempts[sig];
+      if(last && Date.now() - last < 30 * 60 * 1000) return Promise.resolve(0); // same gap tried recently
+      _gapAttempts[sig] = Date.now();
+      _gapRecoverBusy = true;
+      return scanForMissingBills().then(function(list){
+        var filled = 0, onlyLog = 0;
+        list.forEach(function(it){
+          if(it.kind !== "full"){ onlyLog++; return; }
+          var b = it.bill, dk = dateKey(b.date), num = billNumberOf(b.billNo);
+          if(gapDays.indexOf(dk) < 0 || !num) return;
+          if(missingBillNumbersForDay(dk).indexOf(num) < 0) return;      // must fill a real gap
+          if(data.bills.some(function(x){ return x.id === b.id; })) return;
+          var copy = JSON.parse(JSON.stringify(b));
+          copy.recovered = true; copy.recoveredAt = new Date().toISOString(); copy.recoveredBy = "auto";
+          data.bills.push(copy);
+          filled++;
+          auditLogLine("AUTO-FILLED GAP " + copy.billNo + " total=" + copy.total + " (found in " + it.src + ")");
+          journalAppend({ev: "bill_recovered", bill: copy});
+        });
+        if(filled){
+          sortBillsChrono();
+          auditBaseline();
+          saveData();
+          try{ renderHistory(); }catch(e){}
+        }
+        var stillMissing = gapDays.reduce(function(s, k){ return s + missingBillNumbersForDay(k).length; }, 0);
+        if(stillMissing){ auditLogLine("GAP could not be filled automatically (" + stillMissing + " number(s); " + onlyLog + " only in log) - owner: Settings > Recover Missing Bills"); }
+        return filled;
+      }).catch(function(e){ debugLog("auto gap recovery failed: " + (e && e.message)); return 0; })
+        .then(function(r){ _gapRecoverBusy = false; return r; });
+    }catch(e){ _gapRecoverBusy = false; return Promise.resolve(0); }
+  }
+
   var _safetyStarted = false;
   function startSafetyServices(){
     if(_safetyStarted) return;
@@ -13903,11 +13956,12 @@ var qrcode = function() {
     journalAppend({ev: "app_start", bills: (data.bills || []).length});
     autoRestoreBillsFromJournal().then(function(count){
       if(count){
-        showToast(count + " bill(s) that were not fully saved were restored automatically.");
-        try{ renderBillingScreen(); }catch(e){}
+        auditLogLine("START-UP SELF-HEAL restored/repaired " + count + " bill(s) silently");
         try{ renderHistory(); }catch(e){}
       }
-    }).catch(function(e){ debugLog("auto-restore from journal failed: " + (e && e.message)); });
+    }).catch(function(e){ debugLog("auto-restore from journal failed: " + (e && e.message)); })
+      .then(function(){ return autoRecoverGaps(); });
+    setInterval(function(){ autoRecoverGaps(); }, 5 * 60 * 1000); // cheap check; scans files only if a gap exists
   }
 
   /* ================= v0.1.56 RECOVER MISSING BILLS =================
