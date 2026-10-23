@@ -4919,7 +4919,7 @@ var qrcode = function() {
      ============================================================ */
   var LICENSE_API_BASE = "https://licensing-platform.pages.dev"; // set to the real deployed licensing-platform URL
   var PRODUCT_ID = "restaurant-pos";
-  var APP_VERSION = "0.1.60";
+  var APP_VERSION = "0.1.61";
   var DB_VERSION = "1";
   var LICENSED_TO = "";
 
@@ -5338,6 +5338,7 @@ var qrcode = function() {
 
         // v0.1.56: remember exactly which rows this copy of the app has loaded.
         // A routine save may only delete rows it has seen (see deleteMissingIds).
+        bills.sort(compareBillsChrono);
         seedBillSigs(bills);
         _seenIds = {};
         resetSeen("categories", categoryRows.map(function(r){ return r.id; }));
@@ -5916,6 +5917,7 @@ var qrcode = function() {
   // journal. If that takes longer than ~4 s the cashier gets a clear warning (and the
   // write keeps being retried) instead of a false "Bill saved".
   var _billSaving = false;
+  function armBillSaving(){ _billSaving = true; setTimeout(function(){ _billSaving = false; }, 10000); } // never stays stuck
   function whenBillDurable(bill, proceed){
     var timer = new Promise(function(res){ setTimeout(res, 4000); });
     Promise.race([
@@ -10842,7 +10844,7 @@ var qrcode = function() {
         flushCancelledSessionToBill(order, existingBill);
 
         var finishedEditOrderId = order.id;
-        _billSaving = true;
+        armBillSaving();
         saveData();
         updateCreditTabBadge();
         whenBillDurable(existingBill, function(){
@@ -10910,7 +10912,7 @@ var qrcode = function() {
 
     var finishedOrderId = order.id;
     parcelModeDefault = !!order.isParcel && !order.tableId; // next walk-in starts as Parcel too
-    _billSaving = true; // blocks a double-click from making a second bill while this one is being written
+    armBillSaving(); // blocks a double-click from making a second bill while this one is being written
     saveData();
     updateCreditTabBadge();
     whenBillDurable(bill, function(){
@@ -10935,6 +10937,19 @@ var qrcode = function() {
 
   // v0.1.56 BILL NUMBER SAFEGUARDS ------------------------------------
   // "INV-0023" -> 23 (null if the text has no trailing number)
+  // Bills are always kept in the order they were really made: by date/time, then bill
+  // number. A bill that was recovered later therefore slips back into its own day and
+  // its own place in the numbering, instead of showing up as the newest bill.
+  function compareBillsChrono(a, b){
+    var da = new Date(a.date).getTime() || 0, db_ = new Date(b.date).getTime() || 0;
+    if(da !== db_) return da - db_;
+    var na = billNumberOf(a.billNo), nb = billNumberOf(b.billNo);
+    if(na !== null && nb !== null && na !== nb) return na - nb;
+    return String(a.billNo || "").localeCompare(String(b.billNo || ""));
+  }
+  function sortBillsChrono(){
+    if(data && data.bills) data.bills.sort(compareBillsChrono);
+  }
   function billNumberOf(billNo){
     var m = /(\d+)\s*$/.exec(String(billNo || ""));
     return m ? parseInt(m[1], 10) : null;
@@ -11035,7 +11050,7 @@ var qrcode = function() {
     var toKey = document.getElementById("historyToDate").value; // yyyy-mm-dd or ""
     list.innerHTML = "";
 
-    var bills = data.bills.slice().reverse().filter(function(b){
+    var bills = data.bills.slice().sort(compareBillsChrono).reverse().filter(function(b){
       var matchesQuery = !query ||
         (b.billNo && b.billNo.toLowerCase().indexOf(query) !== -1) ||
         (b.table && b.table.toLowerCase().indexOf(query) !== -1) ||
@@ -13838,6 +13853,7 @@ var qrcode = function() {
           }
           auditLogLine("AUTO-RESTORED " + b.billNo + " total=" + b.total + " (was in the journal but not in the database)");
         });
+        sortBillsChrono();
         auditBaseline();
         saveData();
         return restored.length;
@@ -14078,6 +14094,7 @@ var qrcode = function() {
         journalAppend({ev: "bill_recovered", bill: bill});
         added++;
       });
+      sortBillsChrono();
       saveData();
       _recoveryItems = [];
       renderRecoveryList();
