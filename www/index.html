@@ -4919,7 +4919,7 @@ var qrcode = function() {
      ============================================================ */
   var LICENSE_API_BASE = "https://licensing-platform.pages.dev"; // set to the real deployed licensing-platform URL
   var PRODUCT_ID = "restaurant-pos";
-  var APP_VERSION = "0.1.61";
+  var APP_VERSION = "0.1.62";
   var DB_VERSION = "1";
   var LICENSED_TO = "";
 
@@ -13835,6 +13835,22 @@ var qrcode = function() {
         (data.bills || []).forEach(function(b){ have[b.id] = true; });
         (data.deletedBillsLog || []).forEach(function(d){ if(d.originalBillId) del[d.originalBillId] = true; });
         var restored = [];
+        // REPAIR: a bill whose database copy is incomplete (the app was cut off while its
+        // item lines were being written: bill row there, items missing / half-replaced)
+        // is completed from the journal, which always holds the whole bill.
+        var repaired = 0;
+        (data.bills || []).forEach(function(cur, idx){
+          var j = map[cur.id];
+          if(!j || del[cur.id]) return;
+          var curItems = (cur.items || []).length, jItems = (j.items || []).length;
+          if(!jItems) return;
+          if(cur.editedAt && j.editedAt && cur.editedAt > j.editedAt) return; // database copy is the newer edit
+          if(curItems !== jItems || Number(cur.total) !== Number(j.total)){
+            data.bills[idx] = JSON.parse(JSON.stringify(j));
+            repaired++;
+            auditLogLine("AUTO-REPAIRED " + cur.billNo + " (database copy had " + curItems + " item lines / total " + cur.total + ", journal has " + jItems + " / " + j.total + ")");
+          }
+        });
         Object.keys(map).forEach(function(id){
           var b = map[id];
           if(have[id] || del[id] || !b.billNo || !b.date) return;
@@ -13843,6 +13859,7 @@ var qrcode = function() {
           });
           if(!dup) restored.push(b);
         });
+        if(repaired && !restored.length){ auditBaseline(); saveData(); return repaired; }
         if(!restored.length) return 0;
         restored.sort(function(a, b){ return new Date(a.date) - new Date(b.date); });
         restored.forEach(function(b){
@@ -13856,7 +13873,7 @@ var qrcode = function() {
         sortBillsChrono();
         auditBaseline();
         saveData();
-        return restored.length;
+        return restored.length + repaired;
       });
     });
   }
