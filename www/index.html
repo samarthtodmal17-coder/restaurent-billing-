@@ -1748,6 +1748,23 @@
     #menuPickerList{ max-height:52vh; overflow-y:auto; }
     #cartList{ max-height:38vh; overflow-y:auto; }
   }
+  /* v0.1.65 laptop-screen fix: the running-bill item list must never be squeezed to nothing.
+     The list keeps a minimum height; if the whole panel is too tall for a small screen the
+     panel itself scrolls (Save & Print stays pinned at the bottom). */
+  #cardCurrentBill > .acc-body{ overflow-y:auto; overflow-x:hidden; }
+  #cardCurrentBill #cartList{ flex:1 0 auto; min-height:130px; }
+  .cash-helper{ margin-top:6px; padding:6px 8px; }
+  .cash-helper label{ margin:0 0 2px; }
+  .cash-quick{ gap:4px; margin-top:4px; }
+  .cash-quick button{ padding:4px 8px; font-size:13px; }
+  .cash-change{ margin-top:4px; font-size:16px; min-height:20px; }
+  @media (max-height:900px){
+    #cardCurrentBill #cartList{ min-height:150px; }
+    #cardCurrentBill .cash-helper{ padding:4px 6px; }
+    #cardCurrentBill .cash-quick button{ padding:3px 7px; font-size:12px; }
+    #cardCurrentBill #btnSaveBill{ padding:9px 12px; font-size:14px; }
+    #cardCurrentBill .totals-box{ padding:6px 10px; }
+  }
 </style>
 <style id="dynamicReceiptPrintStyle"></style>
 </head>
@@ -4951,7 +4968,7 @@ var qrcode = function() {
      ============================================================ */
   var LICENSE_API_BASE = "https://licensing-platform.pages.dev"; // set to the real deployed licensing-platform URL
   var PRODUCT_ID = "restaurant-pos";
-  var APP_VERSION = "0.1.65";
+  var APP_VERSION = "0.1.66";
   var DB_VERSION = "1";
   var LICENSED_TO = "";
 
