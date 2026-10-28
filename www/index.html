@@ -2589,7 +2589,7 @@
         <button class="btn small" id="btnKotNoteAdd" style="flex:0 0 auto;">Add Note</button>
       </div>
       <button class="btn small secondary" id="btnKotNoteReset" style="margin-top:8px;">Reset to the standard list</button>
-      <label style="display:flex; gap:8px; align-items:center; margin-top:14px; font-weight:600;"><input type="checkbox" id="cancelSlipOn" style="width:auto;"> Print a CANCEL slip for the kitchen when a dish already sent is removed</label>
+      <label style="display:flex; gap:8px; align-items:center; margin-top:14px; font-weight:600;"><input type="checkbox" id="cancelSlipOn" style="width:auto;"> Ask to print a CANCEL slip for the kitchen when a dish already sent is removed</label>
     </div>
 
     <div class="card settings-full">
@@ -5010,7 +5010,7 @@ var qrcode = function() {
      ============================================================ */
   var LICENSE_API_BASE = "https://licensing-platform.pages.dev"; // set to the real deployed licensing-platform URL
   var PRODUCT_ID = "restaurant-pos";
-  var APP_VERSION = "0.1.69";
+  var APP_VERSION = "0.1.70";
   var DB_VERSION = "1";
   var LICENSED_TO = "";
 
@@ -9220,8 +9220,10 @@ var qrcode = function() {
           // then closed from this tab could vanish with no trace. Now it
           // goes through the same reason-and-log path first.
           resolveOrderCancelReason(o, function(reason){
+            var _slipLines3 = sentLinesOf(o), _snap3 = {table: o.table || "", isParcel: !!o.isParcel, kotSent: {}, items: []};
             logOrderClear(o, reason);
             discardOrder(o.id);
+            askCancelSlip(_snap3, _slipLines3, reason);
           });
         });
         closeBtn.addEventListener("keydown", function(e){
@@ -10655,8 +10657,10 @@ var qrcode = function() {
             recordSessionCancellation(order, c.key, c.name, c.price, qtyRemoved, function(recorded){
               if(!recorded) return; // cancelled the reason popup, quantity left unchanged
               var _why = order.cancelledSession ? order.cancelledSession.reason : "";
+              var _slipQty = Math.min(sentQty, c.qty) - Math.max(newQty, 0);
+              var _slip = _slipQty > 0 ? [{name: c.name, qty: _slipQty, note: c.note || ""}] : [];
               finishQtyChange(newQty);
-              printCancelSlip(order, c.name, qtyRemoved, c.note, _why);
+              askCancelSlip(order, _slip, _why);
             });
             return;
           }
@@ -10686,9 +10690,10 @@ var qrcode = function() {
           if(sentQty > 0){
             recordSessionCancellation(order, c.key, c.name, c.price, c.qty, function(recorded){
               if(!recorded) return; // cancelled the reason popup, item left in the cart
-              var _why2 = order.cancelledSession ? order.cancelledSession.reason : "", _q2 = c.qty;
+              var _why2 = order.cancelledSession ? order.cancelledSession.reason : "";
+              var _slip2 = [{name: c.name, qty: Math.min(sentQty, c.qty), note: c.note || ""}];
               finishQtyChange(0);
-              printCancelSlip(order, c.name, _q2, c.note, _why2);
+              askCancelSlip(order, _slip2, _why2);
             });
             return;
           }
@@ -11121,6 +11126,7 @@ var qrcode = function() {
     var hadEarlierCancellations = !!(order.cancelledSession && order.cancelledSession.items && Object.keys(order.cancelledSession.items).length > 0);
 
     function doClear(reason){
+      var _slipLines = sentLinesOf(order);
       logOrderClear(order, reason); // logs to the audit trail -- see logOrderClear
       order.items = [];
       order.discountValue = 0;
@@ -11129,6 +11135,7 @@ var qrcode = function() {
       document.getElementById("discountValue").value = 0;
       renderCart();
       renderOrderTabs();
+      askCancelSlip(order, _slipLines, reason);
     }
 
     // Anti-theft, take 2: a KOT already went to the kitchen for this
@@ -13037,17 +13044,61 @@ var qrcode = function() {
   // as an ADD-ON so kitchen staff don't treat it as a duplicate.
   // v0.1.69: tells the kitchen an already-sent dish is cancelled (can be switched off in Settings > Kitchen Notes)
   function cancelSlipEnabled(){ try{ return localStorage.getItem("rb_cancel_slip") !== "0"; }catch(e){ return true; } }
-  function printCancelSlip(order, name, qty, note, reason){
-    if(!cancelSlipEnabled()) return;
+  // Items of this order that the kitchen was already told about (what a cancel slip is about)
+  function sentLinesOf(order){
+    var out = [];
+    order.items.forEach(function(c){
+      var sent = (order.kotSent && order.kotSent[c.key]) || 0;
+      if(sent > 0) out.push({name: c.name, qty: Math.min(sent, c.qty), note: c.note || ""});
+    });
+    return out;
+  }
+  // Shared by EVERY way a sent dish can be cancelled (−, ✕, Clear Items, closing the order tab):
+  // never prints by itself -- asks first, then acts.
+  var _pendingSlip = null; // one question at a time: cancels made in a burst are gathered into the same slip
+  function askCancelSlip(order, lines, reason){
+    if(!cancelSlipEnabled() || !lines || !lines.length) return;
+    function listHtml(ls){ return ls.map(function(l){ return l.qty + " x " + escapeHtml(l.name); }).join("<br>"); }
+    if(_pendingSlip && _pendingSlip.overlay.parentNode){
+      lines.forEach(function(l){
+        var ex = _pendingSlip.lines.find(function(x){ return x.name === l.name && (x.note || "") === (l.note || ""); });
+        if(ex) ex.qty += l.qty; else _pendingSlip.lines.push({name: l.name, qty: l.qty, note: l.note || ""});
+      });
+      if(reason && !_pendingSlip.reason) _pendingSlip.reason = reason;
+      _pendingSlip.listEl.innerHTML = listHtml(_pendingSlip.lines);
+      return;
+    }
+    var st = {snap: {table: order.table || "", isParcel: !!order.isParcel}, lines: lines.map(function(l){ return {name: l.name, qty: l.qty, note: l.note || ""}; }), reason: reason || ""};
+    var overlay = document.createElement("div");
+    overlay.style.cssText = "position:fixed; inset:0; background:rgba(0,0,0,0.55); z-index:10000; display:flex; align-items:center; justify-content:center; padding:16px;";
+    var box = document.createElement("div");
+    box.style.cssText = "background:var(--card-bg,#fff); color:inherit; border-radius:12px; max-width:420px; width:100%; padding:20px; box-shadow:0 10px 40px rgba(0,0,0,0.35);";
+    box.innerHTML = '<h3 style="margin-top:0;">Print a CANCEL slip for the kitchen?</h3>' +
+      '<p class="muted" style="margin-top:-6px;">The kitchen was already sent:</p><div class="cslip-list" style="font-weight:700; margin:6px 0 14px;">' + listHtml(st.lines) + '</div>' +
+      '<button class="btn" id="cslipYes" style="width:100%;">🖨️ Yes, print CANCEL slip</button>' +
+      '<button class="btn secondary" id="cslipNo" style="width:100%; margin-top:8px;">No, do not print</button>';
+    overlay.appendChild(box); document.body.appendChild(overlay);
+    st.overlay = overlay; st.listEl = box.querySelector(".cslip-list"); _pendingSlip = st;
+    function close(){ document.removeEventListener("keydown", onKey, true); if(overlay.parentNode) overlay.parentNode.removeChild(overlay); if(_pendingSlip === st) _pendingSlip = null; }
+    function onKey(e){ if(e.key === "Escape"){ e.stopPropagation(); close(); } }
+    document.addEventListener("keydown", onKey, true);
+    box.querySelector("#cslipYes").addEventListener("click", function(){ close(); printCancelSlip(st.snap, st.lines, st.reason); });
+    box.querySelector("#cslipNo").addEventListener("click", close);
+    box.querySelector("#cslipYes").focus();
+  }
+  function printCancelSlip(snap, lines, reason){
     currentReceiptBill = null; currentKotTicket = null;
     var html = '<div class="r-center" style="font-weight:800; font-size:18px;">*** CANCEL ***</div>';
     html += '<div class="r-center" style="font-weight:700;">KITCHEN: DO NOT MAKE / STOP</div>';
     html += '<div class="r-center">' + new Date().toLocaleString() + '</div><hr>';
-    if(order.table) html += '<div>Table/Room: ' + escapeHtml(order.table) + '</div>';
-    if(order.isParcel) html += '<div class="r-center" style="font-weight:700;">📦 PARCEL / TAKEAWAY</div>';
-    html += '<table><thead><tr><th>Item</th><th style="text-align:center;">Qty</th></tr></thead><tbody>' +
-      '<tr><td style="font-weight:700;">' + escapeHtml(name) + (note ? '<div>&rarr; ' + escapeHtml(note) + '</div>' : '') +
-      '</td><td style="text-align:center; font-weight:800;">' + qty + '</td></tr></tbody></table><hr>';
+    if(snap.table) html += '<div>Table/Room: ' + escapeHtml(snap.table) + '</div>';
+    if(snap.isParcel) html += '<div class="r-center" style="font-weight:700;">📦 PARCEL / TAKEAWAY</div>';
+    html += '<table><thead><tr><th>Item</th><th style="text-align:center;">Qty</th></tr></thead><tbody>';
+    lines.forEach(function(l){
+      html += '<tr><td style="font-weight:700;">' + escapeHtml(l.name) + (l.note ? '<div>&rarr; ' + escapeHtml(l.note) + '</div>' : '') +
+        '</td><td style="text-align:center; font-weight:800;">' + l.qty + '</td></tr>';
+    });
+    html += '</tbody></table><hr>';
     if(reason) html += '<div>Reason: ' + escapeHtml(reason) + '</div>';
     document.getElementById("receiptContent").innerHTML = html;
     document.querySelector(".receipt-share-row").style.display = "none";
