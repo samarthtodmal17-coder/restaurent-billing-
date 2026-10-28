@@ -1748,6 +1748,20 @@
     #menuPickerList{ max-height:52vh; overflow-y:auto; }
     #cartList{ max-height:38vh; overflow-y:auto; }
   }
+  /* v0.1.67 Settings: main categories first, details only after a category is chosen */
+  .settings-hub{ grid-column:1 / -1; display:grid; grid-template-columns:repeat(auto-fill,minmax(250px,1fr)); gap:14px; }
+  .settings-hub .set-tile{ text-align:left; display:flex; gap:14px; align-items:center; padding:18px 18px; border:1px solid var(--border); border-radius:14px; background:var(--card); color:inherit; cursor:pointer; font:inherit; box-shadow:0 1px 3px rgba(0,0,0,.06); }
+  .settings-hub .set-tile:hover, .settings-hub .set-tile:focus-visible{ border-color:var(--primary); box-shadow:0 2px 10px rgba(0,0,0,.12); outline:none; }
+  .settings-hub .set-ico{ font-size:30px; line-height:1; flex:0 0 auto; }
+  .settings-hub .set-name{ font-weight:800; font-size:16px; }
+  .settings-hub .set-desc{ font-size:12.5px; opacity:.7; margin-top:3px; }
+  .settings-hub .set-go{ margin-left:auto; font-size:22px; opacity:.5; }
+  .settings-catbar{ grid-column:1 / -1; display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
+  .settings-catbar .set-crumb{ font-weight:700; font-size:15px; }
+  .set-hidden{ display:none !important; }
+  /* large, always-visible Save button for every settings category */
+  #screen-settings .settings-savebar{ position:sticky; bottom:0; z-index:20; padding:10px 14px; background:var(--card); border-top:2px solid var(--primary); box-shadow:0 -4px 14px rgba(0,0,0,.18); border-radius:12px; }
+  #screen-settings .settings-savebar #btnSaveSettings{ width:100%; font-size:20px; font-weight:800; padding:18px 20px; min-height:60px; border-radius:12px; letter-spacing:.3px; }
   /* v0.1.65 laptop-screen fix: the running-bill item list must never be squeezed to nothing.
      The list keeps a minimum height; if the whole panel is too tall for a small screen the
      panel itself scrolls (Save & Print stays pinned at the bottom). */
@@ -1803,6 +1817,7 @@
     <span class="vendor-watermark-header">Product of Manokshmi Technologies</span>
     <span class="muted" style="color:#dff2ea; font-size:12px;" id="headerDate"></span>
     <span class="current-user-badge" id="currentUserBadge" style="display:none;" title="Click to switch user" role="button" tabindex="0"></span>
+    <button type="button" id="btnLangToggle" class="theme-toggle-btn" title="Language: English / मराठी" aria-label="Switch language English / Marathi" style="font-size:13px; font-weight:800; min-width:44px;">EN</button>
     <button type="button" id="themeToggleBtn" class="theme-toggle-btn" title="Switch light/dark theme" aria-label="Toggle dark mode">🌙</button>
   </div>
 </header>
@@ -2415,6 +2430,19 @@
 
   <!-- SETTINGS SCREEN -->
   <section id="screen-settings" class="screen">
+    <div id="settingsHub" class="settings-hub">
+      <button type="button" class="set-tile" data-set-cat="biz"><span class="set-ico">🏪</span><span><div class="set-name">Business &amp; Receipt</div><div class="set-desc">Name, address, logo, bill design, UPI QR</div></span><span class="set-go">›</span></button>
+      <button type="button" class="set-tile" data-set-cat="billing"><span class="set-ico">🧾</span><span><div class="set-name">Billing &amp; Tax</div><div class="set-desc">Currency, tax, service charge, packing charge</div></span><span class="set-go">›</span></button>
+      <button type="button" class="set-tile" data-set-cat="printers"><span class="set-ico">🖨️</span><span><div class="set-name">Printers</div><div class="set-desc">Counter and kitchen printer paper width</div></span><span class="set-go">›</span></button>
+      <button type="button" class="set-tile" data-set-cat="kot"><span class="set-ico">🍳</span><span><div class="set-name">Kitchen Notes (KOT)</div><div class="set-desc">One-tap notes for the kitchen</div></span><span class="set-go">›</span></button>
+      <button type="button" class="set-tile" data-set-cat="display"><span class="set-ico">🖥️</span><span><div class="set-name">Display &amp; Language</div><div class="set-desc">Text size, Marathi names</div></span><span class="set-go">›</span></button>
+      <button type="button" class="set-tile" data-set-cat="data"><span class="set-ico">💾</span><span><div class="set-name">Data &amp; Backup</div><div class="set-desc">Export, import, recover missing bills</div></span><span class="set-go">›</span></button>
+      <button type="button" class="set-tile" data-set-cat="staff"><span class="set-ico">👤</span><span><div class="set-name">Staff &amp; Access</div><div class="set-desc">Owner and staff accounts, PINs</div></span><span class="set-go">›</span></button>
+    </div>
+    <div id="settingsCatBar" class="settings-catbar set-hidden">
+      <button type="button" class="btn secondary" id="btnSettingsBack">← All Settings</button>
+      <span class="set-crumb" id="settingsCrumb"></span>
+    </div>
     <div class="card">
       <h2>Business Details</h2>
       <label>Business Logo</label>
@@ -2537,6 +2565,13 @@
       <h2>🧾 Bill Design</h2>
       <p class="muted">Choose how printed and previewed customer bills look. Tap a design to select it -- it applies to the very next bill. Your paper width (above) still decides the size.</p>
       <div id="billDesignGrid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:12px;margin-top:10px;"></div>
+    </div>
+
+    <div class="card settings-full" id="cardMarathiNames">
+      <h2>🌐 Marathi Names (मराठी नावे)</h2>
+      <p class="muted">When the app is switched to Marathi (top bar: EN / मर), every label, button and message turns Marathi. Dish names, customer names and other things you typed are spelt in Marathi by sound. To correct any name, add one line here like <b>paneer chilly = पनीर चिली</b> and press Save.</p>
+      <textarea id="mrWordsBox" rows="5" style="width:100%;" placeholder="paneer chilly = पनीर चिली&#10;sev bhaji = शेव भाजी"></textarea>
+      <button class="btn" id="btnSaveMrWords" style="margin-top:8px;">Save Marathi Names</button>
     </div>
 
     <div class="card settings-full" id="cardKotNotes">
@@ -4968,7 +5003,7 @@ var qrcode = function() {
      ============================================================ */
   var LICENSE_API_BASE = "https://licensing-platform.pages.dev"; // set to the real deployed licensing-platform URL
   var PRODUCT_ID = "restaurant-pos";
-  var APP_VERSION = "0.1.66";
+  var APP_VERSION = "0.1.68";
   var DB_VERSION = "1";
   var LICENSED_TO = "";
 
@@ -14861,5 +14896,79 @@ if("serviceWorker" in navigator){
 }
 </script>
 
+<script src="marathi.js"></script>
+<script>
+/* v0.1.66 Marathi switch: EN / मर button in the top bar. The engine (marathi.js) converts every
+   label, button, heading, placeholder, tooltip, message and pop-up on screen, and keeps doing so
+   for anything drawn later. Switching back restores the original English text exactly. */
+(function(){
+  var KEY = "rb_lang", btn = document.getElementById("btnLangToggle");
+  function cur(){ try{ return localStorage.getItem(KEY) === "mr" ? "mr" : "en"; }catch(e){ return "en"; } }
+  function apply(l){
+    if(btn) btn.textContent = (l === "mr") ? "मर" : "EN";
+    document.documentElement.setAttribute("lang", l === "mr" ? "mr" : "en");
+    if(window.MarathiUI) window.MarathiUI.setLang(l);
+  }
+  if(btn) btn.addEventListener("click", function(){
+    var n = cur() === "mr" ? "en" : "mr";
+    try{ localStorage.setItem(KEY, n); }catch(e){}
+    apply(n);
+  });
+  var box = document.getElementById("mrWordsBox"), save = document.getElementById("btnSaveMrWords");
+  if(box){ try{ box.value = localStorage.getItem("rb_mr_words") || ""; }catch(e){} }
+  if(save) save.addEventListener("click", function(){
+    try{ localStorage.setItem("rb_mr_words", box.value); }catch(e){}
+    if(window.MarathiUI) window.MarathiUI.setUserWords(box.value);
+    if(typeof showToast === "function") showToast("Marathi names saved");
+  });
+  apply(cur());
+})();
+</script>
+<script>
+/* v0.1.67 Settings hierarchy: tiles (main categories) -> chosen category shows its settings cards
+   (each card is still its own collapsible sub-section). Nothing inside the cards was changed. */
+(function(){
+  var sec = document.getElementById("screen-settings"); if(!sec) return;
+  var hub = document.getElementById("settingsHub"), bar = document.getElementById("settingsCatBar"), crumb = document.getElementById("settingsCrumb");
+  function cardOf(id){ var e = document.getElementById(id); return e ? e.closest(".card") : null; }
+  var cards = sec.querySelectorAll(":scope > .card");
+  var C = {
+    business: cardOf("businessName"), display: document.getElementById("cardDisplaySettings"), billing: cardOf("taxPercent"),
+    printer: cardOf("receiptPaperWidth"), upi: cardOf("upiId"), design: document.getElementById("cardBillDesign"),
+    marathi: document.getElementById("cardMarathiNames"), kot: document.getElementById("cardKotNotes"), save: cardOf("btnSaveSettings"),
+    data: cardOf("btnExportData"), recovery: document.getElementById("cardRecovery"), staff: document.getElementById("cardStaffAccounts")
+  };
+  var CATS = {
+    biz:      {title: "🏪 Business & Receipt",   cards: ["business","design","upi","save"]},
+    billing:  {title: "🧾 Billing & Tax",        cards: ["billing","save"]},
+    printers: {title: "🖨️ Printers",             cards: ["printer","save"]},
+    kot:      {title: "🍳 Kitchen Notes (KOT)",  cards: ["kot","save"]},
+    display:  {title: "🖥️ Display & Language",   cards: ["display","marathi","save"]},
+    data:     {title: "💾 Data & Backup",        cards: ["data","recovery","save"]},
+    staff:    {title: "👤 Staff & Access",       cards: ["staff","save"]}
+  };
+  if(C.save){ C.save.classList.add("settings-savebar"); sec.appendChild(C.save); }
+  function show(cat){
+    var keep = [];
+    if(cat && CATS[cat]) keep = CATS[cat].cards.map(function(k){ return C[k]; }).filter(Boolean);
+    Array.prototype.forEach.call(cards, function(c){ c.classList.toggle("set-hidden", keep.indexOf(c) === -1); });
+    hub.classList.toggle("set-hidden", !!cat);
+    bar.classList.toggle("set-hidden", !cat);
+    sec.setAttribute("data-set-view", cat || "hub");
+    if(cat && CATS[cat]){
+      crumb.textContent = "⚙️ Settings › " + CATS[cat].title;
+      // open the sub-sections of the chosen category so the details are visible straight away
+      keep.forEach(function(c){ if(c.classList.contains("acc-collapsed")){ var h = c.querySelector(":scope > h2"); if(h) h.click(); } });
+    } else crumb.textContent = "";
+    try{ window.scrollTo(0, 0); }catch(e){}
+  }
+  hub.addEventListener("click", function(e){ var b = e.target.closest("[data-set-cat]"); if(b) show(b.getAttribute("data-set-cat")); });
+  document.getElementById("btnSettingsBack").addEventListener("click", function(){ show(null); });
+  var tab = document.querySelector('.tab-btn[data-tab="settings"]');
+  if(tab) tab.addEventListener("click", function(){ show(null); });
+  window.openSettingsCategory = show;
+  show(null);
+})();
+</script>
 </body>
 </html>
