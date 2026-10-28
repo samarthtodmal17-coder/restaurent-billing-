@@ -71,9 +71,15 @@ fn migrations() -> Vec<Migration> {
             sql: include_str!("../migrations/0007_bill_delete_lock.sql"),
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 8,
+            description: "kot_notes",
+            sql: include_str!("../migrations/0008_kot_notes.sql"),
+            kind: MigrationKind::Up,
+        },
     ]
-    // Next schema change ever needed: append a new Migration { version: 8, ... }
-    // here. Do not edit versions 1 to 7 once any customer has run them.
+    // Next schema change ever needed: append a new Migration { version: 9, ... }
+    // here. Do not edit versions 1 to 8 once any customer has run them.
 }
 
 /// Real OS-level device identifier for license activation (replaces the

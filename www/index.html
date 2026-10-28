@@ -1194,6 +1194,19 @@
     flex:0 0 auto;
   }
   .rate-edit-btn:hover{color:var(--primary); border-color:var(--primary);}
+  /* v0.1.65 kitchen notes + cash helper (additive) */
+  .item-note{font-size:12px; font-style:italic; color:#b45309; margin-top:2px; font-weight:600;}
+  .note-chip{border:1px solid var(--border); background:var(--input-bg); color:inherit; border-radius:999px; padding:8px 12px; font-size:14px; cursor:pointer; margin:3px;}
+  .note-chip.on{background:var(--primary); color:#fff; border-color:var(--primary); font-weight:700;}
+  .note-chip .nk{opacity:.6; font-size:11px; margin-right:4px;}
+  .cash-helper{margin-top:10px; padding:10px; border:1px dashed var(--border); border-radius:10px; background:var(--surface-soft);}
+  .cash-helper label{font-weight:700;}
+  .cash-quick{display:flex; flex-wrap:wrap; gap:6px; margin-top:8px;}
+  .cash-quick button{border:1px solid var(--border); background:var(--input-bg); color:inherit; border-radius:8px; padding:8px 12px; font-size:15px; font-weight:700; cursor:pointer;}
+  .cash-quick button:hover{border-color:var(--primary); color:var(--primary);}
+  .cash-change{margin-top:8px; font-size:20px; font-weight:800; min-height:26px;}
+  .cash-change.ok{color:#15803d;}
+  .cash-change.short{color:#b91c1c;}
   .rate-edit-input{
     width:90px !important;
     padding:4px 6px !important;
@@ -1816,6 +1829,7 @@
         <span class="kb-key">F7</span><span>Switch Table</span>
         <span class="kb-key">F8</span><span>Print KOT</span>
         <span class="kb-key">F9</span><span>Save &amp; Print</span>
+        <span class="kb-key">Alt+C</span><span>Cash Received</span>
         <span class="kb-key">&uarr;&darr;</span><span>Navigate</span>
         <span class="kb-key">Enter</span><span>Add Item</span>
         <span class="kb-key">1-9</span><span>Pick Size</span>
@@ -1966,6 +1980,13 @@
       </div>
 
       <div class="totals-box" id="totalsBox"></div>
+
+      <div class="cash-helper" id="cashHelper" style="display:none;">
+        <label for="cashGiven">💵 Cash received</label>
+        <input type="number" id="cashGiven" min="0" step="1" inputmode="decimal" placeholder="Type what the customer gave (Alt+C)">
+        <div class="cash-quick" id="cashQuick"></div>
+        <div class="cash-change" id="cashChange"></div>
+      </div>
 
       <div class="cart-actions-bar">
         <div class="row">
@@ -2499,6 +2520,17 @@
       <h2>🧾 Bill Design</h2>
       <p class="muted">Choose how printed and previewed customer bills look. Tap a design to select it -- it applies to the very next bill. Your paper width (above) still decides the size.</p>
       <div id="billDesignGrid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:12px;margin-top:10px;"></div>
+    </div>
+
+    <div class="card settings-full" id="cardKotNotes">
+      <h2>🍳 Kitchen Notes (for KOT)</h2>
+      <p class="muted">One-tap notes offered when you tap 📝 on an item in the bill (for example "Less oil"). They print under the item on the Kitchen Order Ticket. Rename, re-order, add or remove them here -- changes save at once.</p>
+      <div id="kotNoteList"></div>
+      <div class="row" style="margin-top:8px;">
+        <input type="text" id="kotNoteNew" placeholder="e.g. No coriander">
+        <button class="btn small" id="btnKotNoteAdd" style="flex:0 0 auto;">Add Note</button>
+      </div>
+      <button class="btn small secondary" id="btnKotNoteReset" style="margin-top:8px;">Reset to the standard list</button>
     </div>
 
     <div class="card settings-full">
@@ -4919,7 +4951,7 @@ var qrcode = function() {
      ============================================================ */
   var LICENSE_API_BASE = "https://licensing-platform.pages.dev"; // set to the real deployed licensing-platform URL
   var PRODUCT_ID = "restaurant-pos";
-  var APP_VERSION = "0.1.64";
+  var APP_VERSION = "0.1.65";
   var DB_VERSION = "1";
   var LICENSED_TO = "";
 
@@ -4953,6 +4985,7 @@ var qrcode = function() {
       upiId: "",
       showUpiQr: false,
       billDesign: "classic",
+      kotNotePresets: ["Less oil", "Less spicy", "More spicy", "Medium spicy", "No onion", "No garlic", "Extra gravy", "Less salt", "Less sweet", "Extra crispy", "Jain (no onion/garlic)", "Serve hot", "Serve first", "Pack separately"],
     },
     categories: [
       {id: "cat1", name: "Food"},
@@ -5044,6 +5077,7 @@ var qrcode = function() {
     return parsed;
   }
 
+  var NOTE_SEP = "::n:";
   var DB_URL = "sqlite:restaurant.db";
   var _dbHandle = null;
 
@@ -5135,7 +5169,9 @@ var qrcode = function() {
       categoryName: r.category_name,
       subcategoryId: r.subcategory_id || null,
       subcategoryName: r.subcategory_name || "",
-      rateEdited: !!r.rate_edited
+      rateEdited: !!r.rate_edited,
+      note: r.note || "",
+      kotNote: r.kot_note || ""
     };
   }
 
@@ -5205,6 +5241,11 @@ var qrcode = function() {
           dailySeq: biz.daily_seq, lastBillDateKey: biz.last_bill_date_key, upiId: biz.upi_id,
           showUpiQr: !!biz.show_upi_qr, billDesign: biz.bill_design || "classic"
         };
+        // v0.1.65: owner-editable one-tap kitchen notes (only overrides the built-in list when one was saved)
+        try{
+          var savedPresets = biz.kot_note_presets ? JSON.parse(biz.kot_note_presets) : null;
+          if(Array.isArray(savedPresets)) business.kotNotePresets = savedPresets;
+        }catch(e){}
 
         var categories = categoryRows.map(function(r){ return {id: r.id, name: r.name}; });
         var subcategories = subcategoryRows.map(function(r){ return {id: r.id, categoryId: r.category_id, name: r.name}; });
@@ -5271,6 +5312,7 @@ var qrcode = function() {
           order.items.forEach(function(c, i){
             if(c.key) return;
             c.key = c.itemId ? (c.itemId + "::" + (c.variantId || "base")) : ("line_" + i + "_" + (c.name || ""));
+            if(c.note) c.key += NOTE_SEP + c.note; // same key the Note button builds (see setLineNote)
           });
           return order;
         });
@@ -5983,12 +6025,12 @@ var qrcode = function() {
         "UPDATE business_settings SET name=$1, logo=$2, address=$3, phone=$4, footer=$5, currency=$6, " +
         "tax_label=$7, tax_percent=$8, service_charge_percent=$9, bill_prefix=$10, receipt_paper_width=$11, " +
         "receipt_paper_width_custom=$12, kot_paper_width=$13, kot_paper_width_custom=$14, packing_charge_type=$15, " +
-        "packing_charge_value=$16, rawbt_auto_print=$17, daily_seq=$18, last_bill_date_key=$19, upi_id=$20, show_upi_qr=$21, bill_design=$22 " +
+        "packing_charge_value=$16, rawbt_auto_print=$17, daily_seq=$18, last_bill_date_key=$19, upi_id=$20, show_upi_qr=$21, bill_design=$22, kot_note_presets=$23 " +
         "WHERE id=1",
         [biz.name, biz.logo, biz.address, biz.phone, biz.footer, biz.currency, biz.taxLabel, biz.taxPercent,
          biz.serviceChargePercent, biz.billPrefix, biz.receiptPaperWidth, biz.receiptPaperWidthCustom,
          biz.kotPaperWidth, biz.kotPaperWidthCustom, biz.packingChargeType, biz.packingChargeValue,
-         biz.rawBtAutoPrint ? 1 : 0, biz.dailySeq, biz.lastBillDateKey, biz.upiId, biz.showUpiQr ? 1 : 0, biz.billDesign || "classic"]
+         biz.rawBtAutoPrint ? 1 : 0, biz.dailySeq, biz.lastBillDateKey, biz.upiId, biz.showUpiQr ? 1 : 0, biz.billDesign || "classic", JSON.stringify(Array.isArray(biz.kotNotePresets) ? biz.kotNotePresets : [])]
       ); })
       .then(function(){ return runSequential(data.categories, function(c, i){
         // v0.1.40 fix: was INSERT OR REPLACE. An audit confirmed this app's
@@ -6283,14 +6325,18 @@ var qrcode = function() {
   }
 
   function insertLineItem(db, table, fkColumn, fkValue, it, sortOrder){
+    // v0.1.65: kitchen note columns. order_items also remembers the note as it was on the last KOT.
+    var withKotNote = (table === "order_items");
     var sql = "INSERT INTO " + table + " (" + fkColumn + ", item_id, variant_id, name, price, qty, tax_percent, " +
-      "category_id, category_name, subcategory_id, subcategory_name, rate_edited, sort_order) " +
-      "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)";
-    return db.execute(sql, [
+      "category_id, category_name, subcategory_id, subcategory_name, rate_edited, sort_order, note" + (withKotNote ? ", kot_note" : "") + ") " +
+      "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14" + (withKotNote ? ",$15" : "") + ")";
+    var params = [
       fkValue, it.itemId || null, it.variantId || null, it.name, it.price, it.qty,
       it.taxPercent != null ? it.taxPercent : null, it.categoryId || null, it.categoryName || null,
-      it.subcategoryId || null, it.subcategoryName || null, it.rateEdited ? 1 : 0, sortOrder
-    ]);
+      it.subcategoryId || null, it.subcategoryName || null, it.rateEdited ? 1 : 0, sortOrder, it.note || null
+    ];
+    if(withKotNote) params.push(it.kotNote || null);
+    return db.execute(sql, params);
   }
 
   // Runs async step(item, index) for each item strictly one-at-a-time
@@ -6862,6 +6908,7 @@ var qrcode = function() {
   /* ================= SETTINGS ================= */
   function renderSettingsScreen(){
     var b = data.business;
+    try{ renderKotNoteSettings(); }catch(e){}
     document.getElementById("businessName").value = b.name || "";
     document.getElementById("businessAddress").value = b.address || "";
     document.getElementById("businessPhone").value = b.phone || "";
@@ -10130,6 +10177,252 @@ var qrcode = function() {
     card.scrollIntoView({block: "nearest", behavior: "smooth"});
   }
 
+
+  /* ================= v0.1.65 KITCHEN NOTES (KOT) =================
+     Each cart line can carry a short note ("Less oil, Less spicy"). A line with a note is a
+     separate line from the same dish without one (the note is part of the line key), so
+     "2 Paneer, one less spicy" is two clear lines. The note prints under the item on the KOT;
+     a note changed after the KOT was sent prints a CHANGE line. Notes are kept with the bill. */
+  function cleanNote(s){ return String(s || "").replace(/::/g, ":").replace(/\s+/g, " ").trim().slice(0, 120); }
+  function lineBaseKey(c){ return String(c.key || "").split(NOTE_SEP)[0]; }
+  function setLineNote(order, c, rawNote){
+    var note = cleanNote(rawNote);
+    if(note === (c.note || "")) return;
+    var oldKey = c.key, newKey = note ? (lineBaseKey(c) + NOTE_SEP + note) : lineBaseKey(c);
+    c.note = note;
+    order.kotSent = order.kotSent || {};
+    var other = order.items.find(function(x){ return x !== c && x.key === newKey; });
+    if(other){ // the same dish with the same note already has a line: fold into it
+      other.qty += c.qty;
+      var s1 = order.kotSent[oldKey] || 0, s2 = order.kotSent[newKey] || 0;
+      if(s1 || s2) order.kotSent[newKey] = s1 + s2;
+      delete order.kotSent[oldKey];
+      order.items.splice(order.items.indexOf(c), 1);
+    } else {
+      c.key = newKey;
+      if(order.kotSent[oldKey] !== undefined){ order.kotSent[newKey] = order.kotSent[oldKey]; delete order.kotSent[oldKey]; }
+    }
+  }
+  function noteUsageMap(){
+    try{ return JSON.parse(localStorage.getItem("restrobill_note_usage") || "{}") || {}; }catch(e){ return {}; }
+  }
+  function bumpNoteUsage(parts){
+    try{
+      var m = noteUsageMap();
+      parts.forEach(function(t){ m[t] = (m[t] || 0) + 1; });
+      localStorage.setItem("restrobill_note_usage", JSON.stringify(m));
+    }catch(e){}
+  }
+  // The owner's presets, most-used first (ties keep the owner's own order).
+  function sortedNotePresets(){
+    var list = (data.business.kotNotePresets || []).slice();
+    var m = noteUsageMap();
+    return list.map(function(t, i){ return {t: t, i: i}; })
+      .sort(function(a, b){ return (m[b.t] || 0) - (m[a.t] || 0) || a.i - b.i; })
+      .map(function(x){ return x.t; });
+  }
+  function openNoteDialog(order, c){
+    var presets = sortedNotePresets();
+    var current = (c.note || "").split(/\s*,\s*/).filter(Boolean);
+    var selected = {};
+    var custom = [];
+    current.forEach(function(part){
+      if(presets.indexOf(part) >= 0) selected[part] = true; else custom.push(part);
+    });
+    var overlay = document.createElement("div");
+    overlay.style.cssText = "position:fixed; inset:0; background:rgba(0,0,0,0.55); z-index:9999; display:flex; align-items:center; justify-content:center; padding:16px;";
+    var box = document.createElement("div");
+    box.style.cssText = "background:var(--card-bg,#fff); color:inherit; border-radius:12px; max-width:520px; width:100%; max-height:90vh; overflow:auto; padding:18px; box-shadow:0 10px 40px rgba(0,0,0,0.35);";
+    box.innerHTML = '<h3 style="margin-top:0;">📝 Kitchen note</h3>' +
+      '<div class="muted" style="margin-top:-6px; font-weight:600;" id="noteDlgItem"></div>' +
+      '<div id="noteChips" style="margin-top:10px;"></div>' +
+      '<input type="text" id="noteCustom" placeholder="Other note (optional)" style="margin-top:10px;">' +
+      '<div class="row" style="margin-top:12px;">' +
+        '<button class="btn" id="noteDone">Done (Enter)</button>' +
+        '<button class="btn secondary" id="noteClear">No note</button>' +
+        '<button class="btn secondary" id="noteCancel">Cancel (Esc)</button>' +
+      '</div>';
+    document.body.appendChild(overlay);
+    overlay.appendChild(box);
+    box.querySelector("#noteDlgItem").textContent = c.name;
+    box.querySelector("#noteCustom").value = custom.join(", ");
+    var chipsWrap = box.querySelector("#noteChips");
+    function drawChips(){
+      chipsWrap.innerHTML = "";
+      presets.forEach(function(t, i){
+        var b = document.createElement("button");
+        b.type = "button";
+        b.className = "note-chip" + (selected[t] ? " on" : "");
+        b.innerHTML = (i < 9 ? '<span class="nk">' + (i + 1) + '</span>' : "") + escapeHtml(t);
+        b.addEventListener("click", function(){ selected[t] = !selected[t]; drawChips(); });
+        chipsWrap.appendChild(b);
+      });
+      if(!presets.length) chipsWrap.innerHTML = '<span class="muted">No saved notes yet. Add some in Settings, or type one below.</span>';
+    }
+    drawChips();
+    function close(){
+      document.removeEventListener("keydown", onKey, true);
+      if(overlay.parentNode) overlay.parentNode.removeChild(overlay);
+    }
+    function finish(clear){
+      var parts = [];
+      if(!clear){
+        presets.forEach(function(t){ if(selected[t]) parts.push(t); });
+        var extra = cleanNote(box.querySelector("#noteCustom").value);
+        if(extra) parts.push(extra);
+        bumpNoteUsage(parts.filter(function(t){ return presets.indexOf(t) >= 0; }));
+      }
+      close();
+      setLineNote(order, c, parts.join(", "));
+      saveData();
+      renderCart();
+      renderOrderTabs();
+    }
+    function onKey(e){
+      var inField = e.target && e.target.tagName === "INPUT";
+      if(e.key === "Escape"){ e.preventDefault(); e.stopPropagation(); close(); return; }
+      if(e.key === "Enter"){ e.preventDefault(); e.stopPropagation(); finish(false); return; }
+      if(!inField && e.key >= "1" && e.key <= "9"){
+        var t = presets[parseInt(e.key, 10) - 1];
+        if(t){ e.preventDefault(); e.stopPropagation(); selected[t] = !selected[t]; drawChips(); }
+      }
+    }
+    document.addEventListener("keydown", onKey, true);
+    box.querySelector("#noteDone").addEventListener("click", function(){ finish(false); });
+    box.querySelector("#noteClear").addEventListener("click", function(){ finish(true); });
+    box.querySelector("#noteCancel").addEventListener("click", close);
+    overlay.addEventListener("click", function(e){ if(e.target === overlay) close(); });
+  }
+
+  /* ================= v0.1.65 CASH HELPER =================
+     For Cash bills: type (or tap) what the customer gave and the change to return is shown at
+     once. Nothing here is saved or changes the bill -- it is a calculator beside the total. */
+  function cashQuickAmounts(total){
+    var out = {};
+    function add(v){ if(v >= total - 0.0001 && v > 0) out[Math.round(v * 100) / 100] = true; }
+    add(Math.ceil(total));
+    [10, 50, 100, 500, 1000].forEach(function(step){ add(Math.ceil(total / step) * step); });
+    [50, 100, 200, 500, 2000].forEach(function(note){ add(note); });
+    return Object.keys(out).map(Number).sort(function(a, b){ return a - b; }).slice(0, 6);
+  }
+  function updateCashChange(order, total){
+    var el = document.getElementById("cashChange");
+    if(!el) return;
+    var given = parseFloat(order.cashGiven);
+    if(isNaN(given) || order.cashGiven === "" || order.cashGiven === undefined){
+      el.className = "cash-change"; el.textContent = ""; return;
+    }
+    var diff = Math.round((given - total) * 100) / 100;
+    if(diff >= 0){ el.className = "cash-change ok"; el.textContent = "Return: " + fmt(diff); }
+    else { el.className = "cash-change short"; el.textContent = "Short by: " + fmt(-diff); }
+  }
+  function renderCashHelper(){
+    var wrap = document.getElementById("cashHelper");
+    if(!wrap) return;
+    var order = getActiveOrder();
+    var show = !!order && order.items.length > 0 && !order.splitEnabled && (order.paymentMode || "Cash") === "Cash";
+    wrap.style.display = show ? "block" : "none";
+    if(!show) return;
+    var total = computeTotals().total;
+    var input = document.getElementById("cashGiven");
+    if(document.activeElement !== input) input.value = (order.cashGiven === undefined || order.cashGiven === "") ? "" : order.cashGiven;
+    var quick = document.getElementById("cashQuick");
+    quick.innerHTML = "";
+    var exact = document.createElement("button");
+    exact.type = "button"; exact.textContent = "Exact";
+    exact.addEventListener("click", function(){ order.cashGiven = String(Math.round(total * 100) / 100); input.value = order.cashGiven; updateCashChange(order, total); });
+    quick.appendChild(exact);
+    cashQuickAmounts(total).forEach(function(v){
+      var b = document.createElement("button");
+      b.type = "button"; b.textContent = fmt(v);
+      b.addEventListener("click", function(){ order.cashGiven = String(v); input.value = order.cashGiven; updateCashChange(order, total); });
+      quick.appendChild(b);
+    });
+    var clr = document.createElement("button");
+    clr.type = "button"; clr.textContent = "Clear";
+    clr.addEventListener("click", function(){ order.cashGiven = ""; input.value = ""; updateCashChange(order, total); input.focus(); });
+    quick.appendChild(clr);
+    updateCashChange(order, total);
+  }
+  (function wireCashHelper(){
+    var input = document.getElementById("cashGiven");
+    if(!input) return;
+    input.addEventListener("input", function(){
+      var order = getActiveOrder(); if(!order) return;
+      order.cashGiven = input.value;
+      updateCashChange(order, computeTotals().total);
+    });
+    input.addEventListener("keydown", function(e){
+      if(e.key !== "Enter") return;
+      e.preventDefault();
+      var order = getActiveOrder(); var total = computeTotals().total;
+      var given = parseFloat(order.cashGiven);
+      if(isNaN(given)){ showToast("Type the cash received first"); return; }
+      if(given + 0.0001 < total){ showToast("Cash received is less than the bill"); return; }
+      document.getElementById("btnSaveBill").click();
+    });
+    document.addEventListener("keydown", function(e){
+      if(e.altKey && (e.key === "c" || e.key === "C")){
+        var wrap = document.getElementById("cashHelper");
+        if(wrap && wrap.style.display !== "none"){ e.preventDefault(); input.focus(); input.select(); }
+      }
+    });
+    var pm = document.getElementById("paymentMode");
+    if(pm) pm.addEventListener("change", function(){ setTimeout(renderCashHelper, 0); });
+    var sp = document.getElementById("splitPaymentToggle");
+    if(sp) sp.addEventListener("change", function(){ setTimeout(renderCashHelper, 0); });
+  })();
+
+  /* ---- Settings -> Kitchen Notes ---- */
+  function renderKotNoteSettings(){
+    var list = document.getElementById("kotNoteList");
+    if(!list) return;
+    var arr = data.business.kotNotePresets = Array.isArray(data.business.kotNotePresets) ? data.business.kotNotePresets : [];
+    list.innerHTML = "";
+    arr.forEach(function(t, i){
+      var row = document.createElement("div");
+      row.className = "row";
+      row.style.cssText = "align-items:center; margin-bottom:6px; flex-wrap:nowrap;";
+      var inp = document.createElement("input");
+      inp.type = "text"; inp.value = t; inp.style.flex = "1 1 auto";
+      inp.addEventListener("change", function(){
+        var v = cleanNote(inp.value);
+        if(!v){ inp.value = arr[i]; return; }
+        arr[i] = v; saveData(); showToast("Note updated");
+      });
+      function mk(label, title, fn){
+        var b = document.createElement("button");
+        b.type = "button"; b.className = "btn small secondary"; b.style.flex = "0 0 auto"; b.textContent = label; b.title = title;
+        b.addEventListener("click", fn); return b;
+      }
+      row.appendChild(inp);
+      row.appendChild(mk("▲", "Move up", function(){ if(i > 0){ var x = arr[i]; arr[i] = arr[i - 1]; arr[i - 1] = x; saveData(); renderKotNoteSettings(); } }));
+      row.appendChild(mk("▼", "Move down", function(){ if(i < arr.length - 1){ var x = arr[i]; arr[i] = arr[i + 1]; arr[i + 1] = x; saveData(); renderKotNoteSettings(); } }));
+      row.appendChild(mk("✕", "Remove", function(){ arr.splice(i, 1); saveData(); renderKotNoteSettings(); }));
+      list.appendChild(row);
+    });
+    if(!arr.length) list.innerHTML = '<div class="muted">No notes saved. Add one below.</div>';
+  }
+  (function wireKotNoteSettings(){
+    var add = document.getElementById("btnKotNoteAdd");
+    if(!add) return;
+    function doAdd(){
+      var inp = document.getElementById("kotNoteNew");
+      var v = cleanNote(inp.value);
+      if(!v){ showToast("Type a note first"); return; }
+      var arr = data.business.kotNotePresets = Array.isArray(data.business.kotNotePresets) ? data.business.kotNotePresets : [];
+      if(arr.some(function(x){ return x.toLowerCase() === v.toLowerCase(); })){ showToast("That note is already in the list"); return; }
+      arr.push(v); inp.value = ""; saveData(); renderKotNoteSettings(); showToast("Note added");
+    }
+    add.addEventListener("click", doAdd);
+    document.getElementById("kotNoteNew").addEventListener("keydown", function(e){ if(e.key === "Enter"){ e.preventDefault(); doAdd(); } });
+    document.getElementById("btnKotNoteReset").addEventListener("click", function(){
+      if(!confirm("Replace your notes with the standard list?")) return;
+      data.business.kotNotePresets = defaultData.business.kotNotePresets.slice();
+      saveData(); renderKotNoteSettings();
+    });
+  })();
+
   function addToCart(item, variant){
     // Single choke point for every "add to bill" path (tap, Add button,
     // Enter-to-add by code, digit-key variant pick, favourites bar) --
@@ -10230,7 +10523,20 @@ var qrcode = function() {
 
         rateLine.appendChild(rateDisplay);
         rateLine.appendChild(editBtn);
+        var noteBtn = document.createElement("button");
+        noteBtn.type = "button";
+        noteBtn.className = "rate-edit-btn";
+        noteBtn.title = "Kitchen note (less oil, less spicy ...)";
+        noteBtn.textContent = "📝";
+        noteBtn.addEventListener("click", function(){ openNoteDialog(order, c); });
+        rateLine.appendChild(noteBtn);
         infoDiv.appendChild(rateLine);
+        if(c.note){
+          var noteLine = document.createElement("div");
+          noteLine.className = "item-note";
+          noteLine.textContent = "📝 " + c.note;
+          infoDiv.appendChild(noteLine);
+        }
         row.appendChild(infoDiv);
         var controls = document.createElement("div");
         controls.className = "qty-controls";
@@ -10315,6 +10621,7 @@ var qrcode = function() {
 
   function renderTotals(){
     var t = computeTotals();
+    try{ renderCashHelper(); }catch(e){}
     var box = document.getElementById("totalsBox");
     var html = "";
     html += '<div class="line"><span>Subtotal</span><span>' + fmt(t.subtotal) + '</span></div>';
@@ -10768,7 +11075,7 @@ var qrcode = function() {
       return;
     }
     var t = computeTotalsForOrder(order);
-    var itemsSnapshot = order.items.map(function(c){ return {itemId: c.itemId || null, variantId: c.variantId || null, name: c.name, price: c.price, qty: c.qty, taxPercent: c.taxPercent, categoryId: c.categoryId || null, categoryName: c.categoryName, subcategoryId: c.subcategoryId || null, subcategoryName: c.subcategoryName || "", rateEdited: !!c.rateEdited}; });
+    var itemsSnapshot = order.items.map(function(c){ return {itemId: c.itemId || null, variantId: c.variantId || null, name: c.name, price: c.price, qty: c.qty, taxPercent: c.taxPercent, categoryId: c.categoryId || null, categoryName: c.categoryName, subcategoryId: c.subcategoryId || null, subcategoryName: c.subcategoryName || "", rateEdited: !!c.rateEdited, note: c.note || ""}; });
 
     // Credit Payments bills need a customer name at minimum so the amount
     // owed can be tracked against someone in the Credit Book.
@@ -11455,7 +11762,8 @@ var qrcode = function() {
           qty: it.qty,
           taxPercent: it.taxPercent,
           categoryName: it.categoryName,
-          subcategoryName: it.subcategoryName || ""
+          subcategoryName: it.subcategoryName || "",
+          note: it.note || ""
         };
       }),
       discountValue: (bill.discountValue !== undefined ? bill.discountValue : bill.discountAmount) || 0,
@@ -12617,7 +12925,15 @@ var qrcode = function() {
     html += '<hr>';
     html += '<table><thead><tr><th>Item</th><th style="text-align:center;">Qty</th></tr></thead><tbody>';
     ticketItems.forEach(function(item){
-      html += '<tr><td>' + escapeHtml(item.name) + '</td><td style="text-align:center; font-weight:700;">' + item.qty + '</td></tr>';
+      if(item.change){
+        // a note changed after the dish was already sent
+        html += '<tr><td colspan="2" style="font-weight:700;">CHANGE: ' + escapeHtml(item.name) + ' (' + item.qty + ' already sent)' +
+          '<div>&rarr; ' + (item.note ? escapeHtml(item.note) : 'no note') + '</div></td></tr>';
+        return;
+      }
+      html += '<tr><td>' + escapeHtml(item.name) +
+        (item.note ? '<div style="font-weight:700;">&rarr; ' + escapeHtml(item.note) + '</div>' : '') +
+        '</td><td style="text-align:center; font-weight:700;">' + item.qty + '</td></tr>';
     });
     html += '</tbody></table>';
     html += '<hr>';
@@ -12677,8 +12993,12 @@ var qrcode = function() {
       if(!shouldSendToKitchen(c)) return;
       var alreadySent = order.kotSent[c.key] || 0;
       var newQty = c.qty - alreadySent;
+      // v0.1.65: the note was changed after this dish was already sent -> tell the kitchen
+      if(alreadySent > 0 && (c.kotNote || "") !== (c.note || "")){
+        ticketItems.push({name: c.name, qty: alreadySent, note: c.note || "", change: true});
+      }
       if(newQty > 0){
-        ticketItems.push({name: c.name, qty: newQty});
+        ticketItems.push({name: c.name, qty: newQty, note: c.note || ""});
       }
     });
 
@@ -12692,7 +13012,7 @@ var qrcode = function() {
 
     // Mark everything currently in the order as sent, so the next ticket
     // only shows whatever gets added after this point.
-    order.items.forEach(function(c){ order.kotSent[c.key] = c.qty; });
+    order.items.forEach(function(c){ order.kotSent[c.key] = c.qty; c.kotNote = c.note || ""; });
     saveData();
   });
 
