@@ -2394,6 +2394,12 @@
       <div id="dashDiningParcelBox"></div>
     </div>
 
+    <div class="card" id="cardDashCancelled">
+      <h2>🚫 Cancelled After KOT</h2>
+      <p class="muted">Dishes removed after the kitchen ticket was already printed -- whole cleared orders and single items taken off a bill -- by staff member and by reason.</p>
+      <div id="dashCancelledBox"></div>
+    </div>
+
     <div class="card" id="cardDashCategory">
       <h2>Sales by Category</h2>
       <div id="dashCategoryBox"></div>
@@ -2583,6 +2589,7 @@
         <button class="btn small" id="btnKotNoteAdd" style="flex:0 0 auto;">Add Note</button>
       </div>
       <button class="btn small secondary" id="btnKotNoteReset" style="margin-top:8px;">Reset to the standard list</button>
+      <label style="display:flex; gap:8px; align-items:center; margin-top:14px; font-weight:600;"><input type="checkbox" id="cancelSlipOn" style="width:auto;"> Print a CANCEL slip for the kitchen when a dish already sent is removed</label>
     </div>
 
     <div class="card settings-full">
@@ -5003,7 +5010,7 @@ var qrcode = function() {
      ============================================================ */
   var LICENSE_API_BASE = "https://licensing-platform.pages.dev"; // set to the real deployed licensing-platform URL
   var PRODUCT_ID = "restaurant-pos";
-  var APP_VERSION = "0.1.68";
+  var APP_VERSION = "0.1.69";
   var DB_VERSION = "1";
   var LICENSED_TO = "";
 
@@ -6641,13 +6648,34 @@ var qrcode = function() {
       }
     });
     var mergedItems = Object.values(itemsMap);
+    var _sess = order.cancelledSession;
     var hadKotSent = !!(order.kotSent && Object.keys(order.kotSent).length > 0);
     var hadEarlierCancellations = !!(order.cancelledSession && order.cancelledSession.items && Object.keys(order.cancelledSession.items).length > 0);
     if(mergedItems.length > 0){
       var itemsValue = mergedItems.reduce(function(s, it){ return s + (it.price || 0) * (it.qty || 0); }, 0);
       pushClearedOrderLogEntry(order, mergedItems, itemsValue, hadKotSent || hadEarlierCancellations, reason, false);
+      // v0.1.69: the entry belongs to whoever cleared the items (and when), not to whoever happens to be logged in later
+      var _le = data.clearedOrdersLog[data.clearedOrdersLog.length - 1];
+      if(_sess && _sess.by) _le.clearedBy = _sess.by;
+      if(_sess && _sess.firstAt && order.__sweepLog) _le.clearedAt = _sess.firstAt;
     }
     order.cancelledSession = null;
+  }
+
+  // v0.1.69: every item of a KOT-sent order cleared one by one used to leave the cancelled items sitting on an
+  // EMPTY order -- never shown to the owner. Now the moment the order is empty they go into "Orders Cleared After KOT".
+  // Also run once at start-up to pick up any that were already stranded that way.
+  function flushEmptiedCancelledOrder(order){
+    if(!order || order.editingBillId) return false;
+    if(order.items.length !== 0) return false;
+    if(!order.cancelledSession || !order.cancelledSession.items || Object.keys(order.cancelledSession.items).length === 0) return false;
+    logOrderClear(order, order.cancelledSession.reason || "");
+    return true;
+  }
+  function sweepEmptiedCancelledOrders(){
+    var changed = false;
+    (data.openOrders || []).forEach(function(o){ o.__sweepLog = true; if(flushEmptiedCancelledOrder(o)) changed = true; delete o.__sweepLog; });
+    if(changed) saveData();
   }
 
   // Accumulates a single KOT-sent-item removal onto order.cancelledSession
@@ -6702,6 +6730,7 @@ var qrcode = function() {
   function flushCancelledSessionToBill(order, bill){
     if(!order.cancelledSession || !order.cancelledSession.items) return;
     var newItems = Object.values(order.cancelledSession.items);
+    newItems.forEach(function(ni){ if(!ni.by) ni.by = order.cancelledSession.by || ""; });
     if(newItems.length){
       if(bill.cancelledItems && bill.cancelledItems.length){
         newItems.forEach(function(ni){
@@ -6781,6 +6810,7 @@ var qrcode = function() {
     "cardDashPayment": true,
     "cardDashTax": true,
     "cardDashDiningParcel": true,
+    "cardDashCancelled": true,
     "cardDashCategory": true,
     "cardDashItemUnits": true,
     "cardDashBestSellers": true,
@@ -10609,6 +10639,7 @@ var qrcode = function() {
             c.qty = newQty;
             if(order.kotSent && order.kotSent[c.key]) order.kotSent[c.key] = Math.min(order.kotSent[c.key], newQty);
           }
+          flushEmptiedCancelledOrder(order);
           saveData();
           renderCart();
           renderOrderTabs();
@@ -10623,7 +10654,9 @@ var qrcode = function() {
             var qtyRemoved = c.qty - Math.max(newQty, 0);
             recordSessionCancellation(order, c.key, c.name, c.price, qtyRemoved, function(recorded){
               if(!recorded) return; // cancelled the reason popup, quantity left unchanged
+              var _why = order.cancelledSession ? order.cancelledSession.reason : "";
               finishQtyChange(newQty);
+              printCancelSlip(order, c.name, qtyRemoved, c.note, _why);
             });
             return;
           }
@@ -10653,7 +10686,9 @@ var qrcode = function() {
           if(sentQty > 0){
             recordSessionCancellation(order, c.key, c.name, c.price, c.qty, function(recorded){
               if(!recorded) return; // cancelled the reason popup, item left in the cart
+              var _why2 = order.cancelledSession ? order.cancelledSession.reason : "", _q2 = c.qty;
               finishQtyChange(0);
+              printCancelSlip(order, c.name, _q2, c.note, _why2);
             });
             return;
           }
@@ -12277,9 +12312,44 @@ var qrcode = function() {
     return live ? live.name : (bi.subcategoryName || "No Subcategory");
   }
 
+  function renderDashCancelled(fromVal, toVal){
+    var box = document.getElementById("dashCancelledBox"); if(!box) return;
+    var rows = []; // {by, reason, qty, value}
+    function inRange(k){ if(fromVal && k < fromVal) return false; if(toVal && k > toVal) return false; return true; }
+    (data.clearedOrdersLog || []).forEach(function(e){
+      if(!e.hadKotSent || !inRange(dateKey(e.clearedAt))) return;
+      var q = (e.items || []).reduce(function(s, it){ return s + (it.qty || 0); }, 0);
+      rows.push({by: e.clearedBy || "", reason: e.reason || "", qty: q, value: e.itemsValue || 0});
+    });
+    data.bills.forEach(function(b){
+      if(!b.cancelledItems || !b.cancelledItems.length || !inRange(dateKey(b.date))) return;
+      b.cancelledItems.forEach(function(it){ rows.push({by: it.by || "", reason: b.cancelledReason || "", qty: it.qty || 0, value: (it.price || 0) * (it.qty || 0)}); });
+    });
+    if(!rows.length){ box.innerHTML = '<div class="empty-state">Nothing was cancelled after a KOT in this range.</div>'; return; }
+    var totQty = 0, totVal = 0, byStaff = {}, byReason = {};
+    rows.forEach(function(r){
+      totQty += r.qty; totVal += r.value;
+      var sn = r.by || "(not recorded)", rn = r.reason || "(no reason)";
+      byStaff[sn] = byStaff[sn] || {n: 0, qty: 0, value: 0}; byStaff[sn].n++; byStaff[sn].qty += r.qty; byStaff[sn].value += r.value;
+      byReason[rn] = byReason[rn] || {n: 0, qty: 0, value: 0}; byReason[rn].n++; byReason[rn].qty += r.qty; byReason[rn].value += r.value;
+    });
+    function tbl(title, map){
+      var h = '<h3 style="margin:14px 0 6px;">' + title + '</h3><table><thead><tr><th>' + (title.indexOf("staff") >= 0 ? "Staff" : "Reason") + '</th><th style="text-align:right;">Times</th><th style="text-align:right;">Items</th><th style="text-align:right;">Value</th></tr></thead><tbody>';
+      Object.keys(map).sort(function(a, b){ return map[b].value - map[a].value; }).forEach(function(k){
+        h += '<tr><td>' + escapeHtml(k) + '</td><td style="text-align:right;">' + map[k].n + '</td><td style="text-align:right;">' + map[k].qty + '</td><td style="text-align:right;">' + fmt(map[k].value) + '</td></tr>';
+      });
+      return h + '</tbody></table>';
+    }
+    box.innerHTML = '<div class="totals-box"><div class="line"><span>Cancellations</span><span>' + rows.length + '</span></div>' +
+      '<div class="line"><span>Items cancelled</span><span>' + totQty + '</span></div>' +
+      '<div class="line grand" style="color:var(--danger);"><span>Value cancelled</span><span>' + fmt(totVal) + '</span></div></div>' +
+      tbl("By staff member", byStaff) + tbl("By reason", byReason);
+  }
+
   function renderDashboard(){
     var fromVal = document.getElementById("dashFromDate").value;
     var toVal = document.getElementById("dashToDate").value;
+    try{ renderDashCancelled(fromVal, toVal); }catch(e){}
 
     var bills = data.bills.filter(function(b){
       var key = dateKey(b.date);
@@ -12965,6 +13035,29 @@ var qrcode = function() {
   // again after the first ticket, only the newly added items/quantities get
   // printed -- not the whole order again -- and the ticket is clearly marked
   // as an ADD-ON so kitchen staff don't treat it as a duplicate.
+  // v0.1.69: tells the kitchen an already-sent dish is cancelled (can be switched off in Settings > Kitchen Notes)
+  function cancelSlipEnabled(){ try{ return localStorage.getItem("rb_cancel_slip") !== "0"; }catch(e){ return true; } }
+  function printCancelSlip(order, name, qty, note, reason){
+    if(!cancelSlipEnabled()) return;
+    currentReceiptBill = null; currentKotTicket = null;
+    var html = '<div class="r-center" style="font-weight:800; font-size:18px;">*** CANCEL ***</div>';
+    html += '<div class="r-center" style="font-weight:700;">KITCHEN: DO NOT MAKE / STOP</div>';
+    html += '<div class="r-center">' + new Date().toLocaleString() + '</div><hr>';
+    if(order.table) html += '<div>Table/Room: ' + escapeHtml(order.table) + '</div>';
+    if(order.isParcel) html += '<div class="r-center" style="font-weight:700;">📦 PARCEL / TAKEAWAY</div>';
+    html += '<table><thead><tr><th>Item</th><th style="text-align:center;">Qty</th></tr></thead><tbody>' +
+      '<tr><td style="font-weight:700;">' + escapeHtml(name) + (note ? '<div>&rarr; ' + escapeHtml(note) + '</div>' : '') +
+      '</td><td style="text-align:center; font-weight:800;">' + qty + '</td></tr></tbody></table><hr>';
+    if(reason) html += '<div>Reason: ' + escapeHtml(reason) + '</div>';
+    document.getElementById("receiptContent").innerHTML = html;
+    document.querySelector(".receipt-share-row").style.display = "none";
+    document.getElementById("btnShareWhatsapp").style.display = "none";
+    document.getElementById("btnSharePhoto").style.display = "none";
+    document.getElementById("btnDownloadPhoto").style.display = "none";
+    document.getElementById("receipt").style.display = "block";
+    printReceiptNow("kot");
+  }
+
   function showKOT(order, ticketItems, isAddOn){
     currentReceiptBill = null;
     currentKotTicket = {order: order, ticketItems: ticketItems, isAddOn: isAddOn};
@@ -14878,6 +14971,7 @@ var qrcode = function() {
   dataReadyPromise.then(function(loadedData){
     debugLog("dataReadyPromise RESOLVED. bills: " + ((loadedData && loadedData.bills) ? loadedData.bills.length : "n/a") + ", openOrders: " + ((loadedData && loadedData.openOrders) ? loadedData.openOrders.length : "n/a"));
     data = loadedData;
+    try{ sweepEmptiedCancelledOrders(); }catch(e){}
     if(isLicensed()){
       startApp();
       maybeRecheckLicense();
@@ -14966,6 +15060,9 @@ if("serviceWorker" in navigator){
   document.getElementById("btnSettingsBack").addEventListener("click", function(){ show(null); });
   var tab = document.querySelector('.tab-btn[data-tab="settings"]');
   if(tab) tab.addEventListener("click", function(){ show(null); });
+  var cs = document.getElementById("cancelSlipOn");
+  if(cs){ try{ cs.checked = localStorage.getItem("rb_cancel_slip") !== "0"; }catch(e){ cs.checked = true; }
+    cs.addEventListener("change", function(){ try{ localStorage.setItem("rb_cancel_slip", cs.checked ? "1" : "0"); }catch(e){} }); }
   window.openSettingsCategory = show;
   show(null);
 })();
