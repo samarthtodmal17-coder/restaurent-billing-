@@ -311,5 +311,5 @@
     if(active){ restore(document.body); walk(document.body); }
   }
   try{ USER = parseUser(localStorage.getItem("rb_mr_words")); }catch(e){}
-  window.MarathiUI = {setUserWords: setUserWords, setLang: setLang, setReceiptMode: setReceiptMode, translate: trString, dictSize: Object.keys(DICT).length};
+  window.MarathiUI = {setUserWords: setUserWords, setLang: setLang, setReceiptMode: setReceiptMode, syncReceiptNow: function(){ try{ if(observer) observer.takeRecords(); if(robs) robs.takeRecords(); }catch(e){} syncReceipt(); }, translate: trString, dictSize: Object.keys(DICT).length};
 })();

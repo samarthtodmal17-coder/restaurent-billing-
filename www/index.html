@@ -5019,7 +5019,7 @@ var qrcode = function() {
      ============================================================ */
   var LICENSE_API_BASE = "https://licensing-platform.pages.dev"; // set to the real deployed licensing-platform URL
   var PRODUCT_ID = "restaurant-pos";
-  var APP_VERSION = "0.1.71";
+  var APP_VERSION = "0.1.72";
   var DB_VERSION = "1";
   var LICENSED_TO = "";
 
@@ -13571,6 +13571,9 @@ var qrcode = function() {
   // to pick the right physical printer every time.
   function printReceiptNow(kind){
     kind = kind || "receipt";
+    // The Marathi conversion normally runs a moment AFTER the paper is drawn; window.print() freezes the page
+    // immediately, so convert the paper right now or the Windows print dialog would still show English.
+    try{ if(window.MarathiUI && window.MarathiUI.syncReceiptNow) window.MarathiUI.syncReceiptNow(); }catch(e){}
     applyReceiptPrintStyle(kind);
     var originalTitle = document.title;
     if(kind === "kot"){
