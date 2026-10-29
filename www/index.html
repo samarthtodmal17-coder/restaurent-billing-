@@ -989,7 +989,7 @@
     margin:0 auto;
     background:#fff;
     padding:16px;
-    font-family:'Courier New', monospace;
+    font-family:'Courier New', 'Nirmala UI', 'Mangal', monospace;
     font-size:13px;
     color:#000;
   }
@@ -2570,13 +2570,22 @@
     <div class="card settings-full" id="cardBillDesign">
       <h2>🧾 Bill Design</h2>
       <p class="muted">Choose how printed and previewed customer bills look. Tap a design to select it -- it applies to the very next bill. Your paper width (above) still decides the size.</p>
+      <div id="printLangBox" style="margin:12px 0 4px; padding:12px; border:1px dashed var(--border); border-radius:10px;">
+        <label for="printLang" style="font-weight:800; margin-top:0;">🌐 Language of printed bills, KOT and reports</label>
+        <select id="printLang">
+          <option value="auto">Same as the screen language</option>
+          <option value="en">English</option>
+          <option value="mr" data-no-mr>मराठी (Marathi)</option>
+        </select>
+        <p class="muted" style="margin:6px 0 0;">Applies to customer bills, kitchen tickets (KOT), CANCEL slips, day reports and WhatsApp / photo sharing. You can keep the screen in English and still print in Marathi (or the other way round). Item names are spelt in Marathi by sound -- fix any name in Settings &rsaquo; Display &amp; Language &rsaquo; Marathi Names.</p>
+      </div>
       <div id="billDesignGrid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:12px;margin-top:10px;"></div>
     </div>
 
     <div class="card settings-full" id="cardMarathiNames">
       <h2>🌐 Marathi Names (मराठी नावे)</h2>
-      <p class="muted">When the app is switched to Marathi (top bar: EN / मर), every label, button and message turns Marathi. Dish names, customer names and other things you typed are spelt in Marathi by sound. To correct any name, add one line here like <b>paneer chilly = पनीर चिली</b> and press Save.</p>
-      <textarea id="mrWordsBox" rows="5" style="width:100%;" placeholder="paneer chilly = पनीर चिली&#10;sev bhaji = शेव भाजी"></textarea>
+      <p class="muted">When the app is switched to Marathi (top bar: EN / मर), every label, button and message turns Marathi. Dish names, customer names and other things you typed are spelt in Marathi by sound. To correct any name or phrase (dish names, your address, the bill footer), add one line here like <b>paneer chilly = पनीर चिली</b> or <b>thank you! visit again = धन्यवाद! पुन्हा भेट द्या</b> and press Save. It is used on the screen and on printed bills, KOT and WhatsApp text.</p>
+      <textarea id="mrWordsBox" rows="5" style="width:100%;" placeholder="paneer chilly = पनीर चिली&#10;sev bhaji = शेव भाजी&#10;thank you! visit again = धन्यवाद! पुन्हा भेट द्या"></textarea>
       <button class="btn" id="btnSaveMrWords" style="margin-top:8px;">Save Marathi Names</button>
     </div>
 
@@ -5010,7 +5019,7 @@ var qrcode = function() {
      ============================================================ */
   var LICENSE_API_BASE = "https://licensing-platform.pages.dev"; // set to the real deployed licensing-platform URL
   var PRODUCT_ID = "restaurant-pos";
-  var APP_VERSION = "0.1.70";
+  var APP_VERSION = "0.1.71";
   var DB_VERSION = "1";
   var LICENSED_TO = "";
 
@@ -12717,7 +12726,7 @@ var qrcode = function() {
     }
     if(b.footer) lines.push(b.footer);
     if(LICENSED_TO) lines.push("Licensed to: " + LICENSED_TO);
-    return lines.join("\n");
+    return lines.map(function(l){ return window.mrReceiptTr ? window.mrReceiptTr(l) : l; }).join("\n");
   }
 
   // RawBT direct-print (skip-the-Android-picker) was removed in v0.1.17 --
@@ -13284,11 +13293,12 @@ var qrcode = function() {
       var blocks = [];
 
       function fontFor(opts){
-        return (opts.bold ? "bold " : "") + (opts.size || 13) + "px 'Courier New', monospace";
+        return (opts.bold ? "bold " : "") + (opts.size || 13) + "px 'Courier New', 'Nirmala UI', 'Mangal', monospace";
       }
 
       function addText(text, opts){
         opts = opts || {};
+        text = window.mrReceiptTr ? window.mrReceiptTr(String(text)) : text;
         mctx.font = fontFor(opts);
         wrapText(mctx, text, contentWidth).forEach(function(w){
           blocks.push({type: "text", text: w, align: opts.align || "left", bold: opts.bold, size: opts.size || 13});
@@ -13301,6 +13311,7 @@ var qrcode = function() {
 
       function addRow(cols, opts){
         opts = opts || {};
+        if(window.mrReceiptTr && window.mrReceiptActive && window.mrReceiptActive()) cols = cols.map(function(c){ return typeof c === "string" ? window.mrReceiptTr(c) : c; });
         blocks.push({type: "row", cols: cols, bold: opts.bold, size: opts.size || 12});
       }
 
@@ -13415,7 +13426,7 @@ var qrcode = function() {
           return;
         }
         if(blk.type === "qr"){
-          ctx.font = "bold 11px 'Courier New', monospace";
+          ctx.font = "bold 11px 'Courier New', 'Nirmala UI', monospace";
           var capText = "SCAN TO PAY (UPI)";
           var capX = (width - ctx.measureText(capText).width) / 2;
           ctx.textAlign = "left";
@@ -15066,6 +15077,16 @@ if("serviceWorker" in navigator){
     if(window.MarathiUI) window.MarathiUI.setUserWords(box.value);
     if(typeof showToast === "function") showToast("Marathi names saved");
   });
+  var pl = document.getElementById("printLang");
+  function curPrint(){ try{ var v = localStorage.getItem("rb_print_lang"); return (v === "mr" || v === "en") ? v : "auto"; }catch(e){ return "auto"; } }
+  if(pl){
+    pl.value = curPrint();
+    pl.addEventListener("change", function(){
+      try{ localStorage.setItem("rb_print_lang", pl.value); }catch(e){}
+      if(window.MarathiUI) window.MarathiUI.setReceiptMode(pl.value);
+    });
+  }
+  if(window.MarathiUI) window.MarathiUI.setReceiptMode(curPrint());
   apply(cur());
 })();
 </script>
